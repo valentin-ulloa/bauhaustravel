@@ -1,0 +1,18 @@
+graph TD
+    TW[Twilio Webhook] --> ROUTER[Agent Router (FastAPI)]
+
+    %% Agents
+    ROUTER --> NOTIF[Notifications&nbsp;Agent]
+    ROUTER --> ITINERARY[Itinerary&nbsp;Agent]
+    ROUTER --> CONCIERGE[Concierge&nbsp;/ Support&nbsp;Agent]
+
+    %% Shared state
+    NOTIF --> SUPABASE[(Supabase&nbsp;DB)]
+    ITINERARY --> SUPABASE
+    CONCIERGE --> SUPABASE
+
+    %% External APIs
+    NOTIF --> AEROAPI{{AeroAPI}}
+    NOTIF --> WEATHER{{OpenWeather}}
+    ITINERARY --> LLM{{OpenAI&nbsp;API}}
+    CONCIERGE --> LLM
