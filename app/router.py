@@ -53,12 +53,12 @@ async def create_trip(trip_in: TripCreate):
             )
         
         # Extract created trip
-        trip = create_result.data
-        trip_id = trip.id
+        trip_data = create_result.data
+        trip_id = trip_data["id"]
         
         logger.info("trip_created_successfully", 
             trip_id=str(trip_id),
-            flight_number=trip.flight_number
+            flight_number=trip_data["flight_number"]
         )
         
         # Initialize notifications agent and send confirmation

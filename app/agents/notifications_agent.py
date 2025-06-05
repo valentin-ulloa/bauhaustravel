@@ -115,11 +115,14 @@ class NotificationsAgent:
                 )
                 return DatabaseResult(success=False, error=error_msg)
             
-            trip = trip_result.data
-            if not trip:
+            trip_data = trip_result.data
+            if not trip_data:
                 error_msg = f"Trip {trip_id} not found"
                 logger.error("trip_not_found", trip_id=str(trip_id))
                 return DatabaseResult(success=False, error=error_msg)
+            
+            # Convert dict back to Trip object for send_notification method
+            trip = Trip(**trip_data)
             
             # Send the notification using existing send_notification method
             result = await self.send_notification(trip, notification_type, extra_data)

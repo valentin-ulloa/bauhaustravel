@@ -125,7 +125,7 @@ class SupabaseDBClient:
             
             return DatabaseResult(
                 success=True,
-                data=trip,
+                data=trip.model_dump(),
                 affected_rows=1
             )
             
@@ -174,7 +174,7 @@ class SupabaseDBClient:
             
             return DatabaseResult(
                 success=True,
-                data=trip
+                data=trip.model_dump()
             )
             
         except Exception as e:
