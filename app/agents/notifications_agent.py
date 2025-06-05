@@ -79,6 +79,74 @@ class NotificationsAgent:
             )
             return DatabaseResult(success=False, error=str(e))
     
+    async def send_single_notification(
+        self, 
+        trip_id: UUID, 
+        notification_type: NotificationType, 
+        extra_data: Optional[Dict[str, Any]] = None
+    ) -> DatabaseResult:
+        """
+        Send a single notification for a specific trip.
+        
+        This method is designed for immediate notifications (e.g., booking confirmations)
+        triggered directly from API endpoints.
+        
+        Args:
+            trip_id: UUID of the trip to send notification for
+            notification_type: Type of notification to send (matches template enums)
+            extra_data: Additional data for template formatting
+            
+        Returns:
+            DatabaseResult with operation status
+        """
+        logger.info("sending_single_notification", 
+            trip_id=str(trip_id),
+            notification_type=notification_type
+        )
+        
+        try:
+            # Load trip from database
+            trip_result = await self.db_client.get_trip_by_id(trip_id)
+            if not trip_result.success:
+                error_msg = f"Failed to load trip {trip_id}: {trip_result.error}"
+                logger.error("trip_load_failed", 
+                    trip_id=str(trip_id),
+                    error=trip_result.error
+                )
+                return DatabaseResult(success=False, error=error_msg)
+            
+            trip = trip_result.data
+            if not trip:
+                error_msg = f"Trip {trip_id} not found"
+                logger.error("trip_not_found", trip_id=str(trip_id))
+                return DatabaseResult(success=False, error=error_msg)
+            
+            # Send the notification using existing send_notification method
+            result = await self.send_notification(trip, notification_type, extra_data)
+            
+            if result.success:
+                logger.info("single_notification_sent", 
+                    trip_id=str(trip_id),
+                    notification_type=notification_type,
+                    message_sid=result.data.get("message_sid") if result.data else None
+                )
+            else:
+                logger.error("single_notification_failed", 
+                    trip_id=str(trip_id),
+                    notification_type=notification_type,
+                    error=result.error
+                )
+            
+            return result
+            
+        except Exception as e:
+            logger.error("single_notification_error", 
+                trip_id=str(trip_id),
+                notification_type=notification_type,
+                error=str(e)
+            )
+            return DatabaseResult(success=False, error=str(e))
+    
     async def schedule_24h_reminders(self) -> DatabaseResult:
         """
         Send 24h flight reminders.
@@ -349,8 +417,8 @@ class NotificationsAgent:
             gate = extra_data.get("gate", "Ver pantallas") if extra_data else "Ver pantallas"
             return WhatsAppTemplates.format_boarding_call(trip_data, gate)
         
-        elif notification_type == NotificationType.BOOKING_CONFIRMATION:
-            return WhatsAppTemplates.format_booking_confirmation(trip_data)
+        elif notification_type == NotificationType.RESERVATION_CONFIRMATION:
+            return WhatsAppTemplates.format_reservation_confirmation(trip_data)
         
         else:
             raise ValueError(f"Unknown notification type: {notification_type}")

@@ -76,6 +76,54 @@ class SupabaseDBClient:
             logger.error("trips_query_failed", error=str(e))
             return []
     
+    async def get_trip_by_id(self, trip_id: UUID) -> DatabaseResult:
+        """
+        Get a single trip by its ID.
+        
+        Args:
+            trip_id: UUID of the trip to retrieve
+            
+        Returns:
+            DatabaseResult with Trip object or error
+        """
+        try:
+            response = await self._client.get(
+                f"{self.rest_url}/trips",
+                params={
+                    "id": f"eq.{trip_id}",
+                    "select": "*"
+                }
+            )
+            response.raise_for_status()
+            
+            trips_data = response.json()
+            
+            if not trips_data:
+                logger.warning("trip_not_found", trip_id=str(trip_id))
+                return DatabaseResult(
+                    success=False,
+                    error=f"Trip {trip_id} not found"
+                )
+            
+            trip = Trip(**trips_data[0])
+            
+            logger.info("trip_retrieved", trip_id=str(trip_id))
+            
+            return DatabaseResult(
+                success=True,
+                data=trip
+            )
+            
+        except Exception as e:
+            logger.error("trip_retrieval_failed", 
+                trip_id=str(trip_id), 
+                error=str(e)
+            )
+            return DatabaseResult(
+                success=False,
+                error=str(e)
+            )
+    
     async def update_next_check_at(self, trip_id: UUID, next_check_at: datetime) -> DatabaseResult:
         """
         Update next_check_at for a specific trip.

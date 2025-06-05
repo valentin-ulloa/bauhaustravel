@@ -6,12 +6,12 @@ from enum import Enum
 
 class NotificationType(str, Enum):
     """Notification types for template selection."""
-    REMINDER_24H = "24h_reminder"
+    RESERVATION_CONFIRMATION = "reservation_confirmation"
+    REMINDER_24H = "reminder_24h"
     DELAYED = "delayed"
     GATE_CHANGE = "gate_change"
     CANCELLED = "cancelled"
     BOARDING = "boarding"
-    BOOKING_CONFIRMATION = "booking_confirmation"
 
 
 class WhatsAppTemplates:
@@ -19,6 +19,10 @@ class WhatsAppTemplates:
     
     # Actual Twilio template SIDs and names
     TEMPLATES = {
+        NotificationType.RESERVATION_CONFIRMATION: {
+            "name": "confirmacion_reserva", 
+            "sid": "HX01a541412cda42dd91bff6995fdc3f4a"
+        },
         NotificationType.REMINDER_24H: {
             "name": "recordatorio_24h",
             "sid": "HXf79f6f380e09de4f1b953f7045c6aa19"
@@ -38,10 +42,6 @@ class WhatsAppTemplates:
         NotificationType.BOARDING: {
             "name": "embarcando",
             "sid": "HX3571933547ed2f3b6e4c6dc64a84f3b7"
-        },
-        NotificationType.BOOKING_CONFIRMATION: {
-            "name": "confirmacion_reserva", 
-            "sid": "HX01a541412cda42dd91bff6995fdc3f4a"
         }
     }
     
@@ -152,14 +152,14 @@ class WhatsAppTemplates:
         }
     
     @classmethod
-    def format_booking_confirmation(cls, trip_data: Dict[str, Any]) -> Dict[str, Any]:
+    def format_reservation_confirmation(cls, trip_data: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Format booking confirmation notification.
+        Format reservation confirmation notification.
         
         Template: confirmacion_reserva (HX01a541412cda42dd91bff6995fdc3f4a)
         Variables: {{1}} name, {{2}} flight_number, {{3}} origin, {{4}} destination, {{5}} departure_date
         """
-        template_info = cls.TEMPLATES[NotificationType.BOOKING_CONFIRMATION]
+        template_info = cls.TEMPLATES[NotificationType.RESERVATION_CONFIRMATION]
         return {
             "template_sid": template_info["sid"],
             "template_name": template_info["name"],
@@ -182,12 +182,12 @@ class WhatsAppTemplates:
 def get_required_variables(notification_type: NotificationType) -> list[str]:
     """Get required variables for each template type."""
     required_vars = {
+        NotificationType.RESERVATION_CONFIRMATION: ["client_name", "flight_number", "origin_iata", "destination_iata", "departure_time"],
         NotificationType.REMINDER_24H: ["client_name", "origin_iata", "departure_time", "destination_iata"],
         NotificationType.DELAYED: ["client_name", "flight_number"],
         NotificationType.GATE_CHANGE: ["client_name", "flight_number"],
         NotificationType.CANCELLED: ["client_name", "flight_number"],
-        NotificationType.BOARDING: ["flight_number"],
-        NotificationType.BOOKING_CONFIRMATION: ["client_name", "flight_number", "origin_iata", "destination_iata", "departure_time"]
+        NotificationType.BOARDING: ["flight_number"]
     }
     return required_vars.get(notification_type, [])
 
