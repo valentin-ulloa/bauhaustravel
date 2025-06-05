@@ -6,6 +6,19 @@ from uuid import UUID
 from pydantic import BaseModel, Field
 
 
+class TripCreate(BaseModel):
+    """Model for creating new trips."""
+    client_name: str = Field(..., min_length=1, max_length=100)
+    whatsapp: str = Field(..., min_length=10, max_length=20)  # International format
+    flight_number: str = Field(..., min_length=3, max_length=10)
+    origin_iata: str = Field(..., min_length=3, max_length=3)
+    destination_iata: str = Field(..., min_length=3, max_length=3)
+    departure_date: datetime
+    status: str = "SCHEDULED"  # Default status
+    metadata: Optional[dict] = None
+    client_description: Optional[str] = None
+
+
 class Trip(BaseModel):
     """Model for trips table records."""
     id: UUID
@@ -26,7 +39,14 @@ class NotificationLog(BaseModel):
     """Model for notifications_log table records."""
     id: Optional[UUID] = None
     trip_id: UUID
-    notification_type: Literal["24h_reminder", "status_change", "landing"]
+    notification_type: Literal[
+        "reservation_confirmation", 
+        "reminder_24h", 
+        "delayed", 
+        "gate_change", 
+        "cancelled", 
+        "boarding"
+    ]
     template_name: str
     delivery_status: Literal["SENT", "FAILED", "PENDING"] = "PENDING"
     sent_at: Optional[datetime] = None

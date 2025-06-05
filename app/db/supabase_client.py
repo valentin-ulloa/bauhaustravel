@@ -1,12 +1,12 @@
 """Supabase database client for Bauhaus Travel."""
 
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Optional
 from uuid import UUID
 import httpx
 import structlog
-from ..models.database import Trip, NotificationLog, DatabaseResult
+from ..models.database import Trip, TripCreate, NotificationLog, DatabaseResult
 
 logger = structlog.get_logger()
 
@@ -75,6 +75,69 @@ class SupabaseDBClient:
         except Exception as e:
             logger.error("trips_query_failed", error=str(e))
             return []
+    
+    async def create_trip(self, trip_data: TripCreate) -> DatabaseResult:
+        """
+        Create a new trip in the database.
+        
+        Args:
+            trip_data: TripCreate object with trip details
+            
+        Returns:
+            DatabaseResult with created Trip object or error
+        """
+        try:
+            # Calculate initial next_check_at (24h before departure for reminders)
+            next_check_at = trip_data.departure_date - timedelta(hours=24)
+            
+            # Prepare data for insertion
+            insert_data = {
+                "client_name": trip_data.client_name,
+                "whatsapp": trip_data.whatsapp,
+                "flight_number": trip_data.flight_number,
+                "origin_iata": trip_data.origin_iata,
+                "destination_iata": trip_data.destination_iata,
+                "departure_date": trip_data.departure_date.isoformat(),
+                "status": trip_data.status,
+                "metadata": trip_data.metadata,
+                "client_description": trip_data.client_description,
+                "next_check_at": next_check_at.isoformat()
+            }
+            
+            response = await self._client.post(
+                f"{self.rest_url}/trips",
+                json=insert_data
+            )
+            response.raise_for_status()
+            
+            created_data = response.json()
+            
+            if not created_data:
+                raise ValueError("No data returned from trip creation")
+            
+            trip = Trip(**created_data[0])
+            
+            logger.info("trip_created", 
+                trip_id=str(trip.id),
+                client_name=trip.client_name,
+                flight_number=trip.flight_number
+            )
+            
+            return DatabaseResult(
+                success=True,
+                data=trip,
+                affected_rows=1
+            )
+            
+        except Exception as e:
+            logger.error("trip_creation_failed", 
+                flight_number=trip_data.flight_number,
+                error=str(e)
+            )
+            return DatabaseResult(
+                success=False,
+                error=str(e)
+            )
     
     async def get_trip_by_id(self, trip_id: UUID) -> DatabaseResult:
         """

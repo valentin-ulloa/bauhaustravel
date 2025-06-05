@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 
 from .api.webhooks import router as webhooks_router
+from .router import router as trips_router
 
 # Load environment variables
 load_dotenv()
@@ -65,6 +66,7 @@ app.add_middleware(
 
 # Include routers
 app.include_router(webhooks_router)
+app.include_router(trips_router)
 
 
 @app.get("/")
