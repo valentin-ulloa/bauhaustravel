@@ -40,9 +40,14 @@ async def trip_confirmation_webhook(
     try:
         # Validate this is a trip insert
         if payload.type != "INSERT" or payload.table != "trips":
+            logger.error("invalid_webhook_payload",
+                error_code="INVALID_WEBHOOK_PAYLOAD",
+                payload_type=payload.type,
+                table=payload.table
+            )
             raise HTTPException(
                 status_code=400, 
-                detail=f"Invalid webhook payload: {payload.type} on {payload.table}"
+                detail="Invalid webhook payload"
             )
         
         # Parse trip data
@@ -69,10 +74,11 @@ async def trip_confirmation_webhook(
         
     except Exception as e:
         logger.error("trip_confirmation_webhook_failed", 
+            error_code="WEBHOOK_PROCESSING_ERROR",
             error=str(e),
             payload=payload.dict()
         )
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Webhook processing failed")
 
 
 async def send_booking_confirmation(trip: Trip):

@@ -13,6 +13,7 @@ class NotificationType(str, Enum):
     GATE_CHANGE = "gate_change"
     CANCELLED = "cancelled"
     BOARDING = "boarding"
+    ITINERARY_READY = "itinerary_ready"
 
 
 class WhatsAppTemplates:
@@ -43,6 +44,10 @@ class WhatsAppTemplates:
         NotificationType.BOARDING: {
             "name": "embarcando",
             "sid": "HX3571933547ed2f3b6e4c6dc64a84f3b7"
+        },
+        NotificationType.ITINERARY_READY: {
+            "name": "itinerario",
+            "sid": "HXa031416ae1602595485bfda7df043545"
         }
     }
     
@@ -175,6 +180,23 @@ class WhatsAppTemplates:
                 "3": trip_data["origin_iata"],       # origin
                 "4": trip_data["destination_iata"],  # destination
                 "5": formatted_time                  # departure_date (formatted as hh:mm hs)
+            }
+        }
+    
+    @classmethod
+    def format_itinerary_ready(cls, trip_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Format itinerary ready notification.
+        
+        Template: itinerario (HXa031416ae1602595485bfda7df043545)
+        Variables: {{1}} name
+        """
+        template_info = cls.TEMPLATES[NotificationType.ITINERARY_READY]
+        return {
+            "template_sid": template_info["sid"],
+            "template_name": template_info["name"],
+            "template_variables": {
+                "1": trip_data["client_name"]  # name
             }
         }
     

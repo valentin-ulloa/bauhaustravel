@@ -351,7 +351,7 @@ class NotificationsAgent:
 
             # Log the notification
             log_result = await self.db_client.log_notification_sent(
-                trip_id=trip.id,
+                trip_id=str(trip.id),
                 notification_type=notification_type_db,  # CORRECTO
                 sent_at=datetime.now(timezone.utc),
                 status="SENT",
@@ -377,7 +377,7 @@ class NotificationsAgent:
         except Exception as e:
             # Log failed attempt
             await self.db_client.log_notification_sent(
-                trip_id=trip.id,
+                trip_id=str(trip.id),
                 notification_type=notification_type_db,  # CORRECTO
                 sent_at=datetime.now(timezone.utc),
                 status="FAILED",
@@ -442,6 +442,9 @@ class NotificationsAgent:
         
         elif notification_type == NotificationType.RESERVATION_CONFIRMATION:
             return WhatsAppTemplates.format_reservation_confirmation(trip_data)
+        
+        elif notification_type == NotificationType.ITINERARY_READY:
+            return WhatsAppTemplates.format_itinerary_ready(trip_data)
         
         else:
             raise ValueError(f"Unknown notification type: {notification_type}")

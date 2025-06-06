@@ -6,7 +6,7 @@ from typing import List, Optional
 from uuid import UUID
 import httpx
 import structlog
-from ..models.database import Trip, TripCreate, NotificationLog, DatabaseResult
+from ..models.database import Trip, TripCreate, NotificationLog, DatabaseResult, AgencyPlace, Itinerary
 
 logger = structlog.get_logger()
 
@@ -76,6 +76,52 @@ class SupabaseDBClient:
             logger.error("trips_query_failed", error=str(e))
             return []
     
+    async def check_duplicate_trip(self, whatsapp: str, flight_number: str, departure_date: datetime) -> DatabaseResult:
+        """
+        Check if a trip with same whatsapp + flight_number + departure_date already exists.
+        
+        Args:
+            whatsapp: WhatsApp number
+            flight_number: Flight number
+            departure_date: Departure date
+            
+        Returns:
+            DatabaseResult with exists flag in data or error
+        """
+        try:
+            # Format date to match database format (date only, ignore time for duplicate check)
+            date_str = departure_date.strftime("%Y-%m-%d")
+            
+            response = await self._client.get(
+                f"{self.rest_url}/trips",
+                params={
+                    "whatsapp": f"eq.{whatsapp}",
+                    "flight_number": f"eq.{flight_number}",
+                    "departure_date": f"gte.{date_str}T00:00:00",
+                    "departure_date": f"lt.{date_str}T23:59:59",
+                    "select": "id,flight_number"
+                }
+            )
+            response.raise_for_status()
+            
+            trips_data = response.json()
+            
+            return DatabaseResult(
+                success=True,
+                data={"exists": len(trips_data) > 0, "count": len(trips_data)}
+            )
+            
+        except Exception as e:
+            logger.error("duplicate_check_failed", 
+                whatsapp=whatsapp,
+                flight_number=flight_number,
+                error=str(e)
+            )
+            return DatabaseResult(
+                success=False,
+                error=str(e)
+            )
+
     async def create_trip(self, trip_data: TripCreate) -> DatabaseResult:
         """
         Create a new trip in the database.
@@ -333,4 +379,282 @@ class SupabaseDBClient:
                 trip_id=str(trip_id), 
                 error=str(e)
             )
-            return [] 
+            return []
+
+    async def get_agency_places(self, agency_id: UUID, destination_city: str = None) -> List[AgencyPlace]:
+        """
+        Get agency places for validation.
+        
+        Args:
+            agency_id: UUID of the agency
+            destination_city: Optional filter by destination city
+            
+        Returns:
+            List of AgencyPlace records
+        """
+        try:
+            params = {"agency_id": f"eq.{agency_id}", "select": "*"}
+            if destination_city:
+                params["city"] = f"eq.{destination_city}"
+            
+            response = await self._client.get(
+                f"{self.rest_url}/agency_places",
+                params=params
+            )
+            response.raise_for_status()
+            
+            places_data = response.json()
+            places = [AgencyPlace(**place_data) for place_data in places_data]
+            
+            logger.info("agency_places_retrieved", 
+                agency_id=str(agency_id),
+                city=destination_city,
+                count=len(places)
+            )
+            
+            return places
+            
+        except Exception as e:
+            logger.error("agency_places_retrieval_failed", 
+                agency_id=str(agency_id),
+                error=str(e)
+            )
+            return []
+
+    async def create_itinerary(self, itinerary_data: dict) -> DatabaseResult:
+        """
+        Create a new itinerary in the database.
+        
+        Args:
+            itinerary_data: Dict with itinerary fields
+            
+        Returns:
+            DatabaseResult with created Itinerary object or error
+        """
+        try:
+            response = await self._client.post(
+                f"{self.rest_url}/itineraries",
+                json=itinerary_data
+            )
+            response.raise_for_status()
+            
+            created_data = response.json()
+            
+            if not created_data:
+                raise ValueError("No data returned from itinerary creation")
+            
+            itinerary = Itinerary(**created_data[0])
+            
+            logger.info("itinerary_created", 
+                itinerary_id=str(itinerary.id),
+                trip_id=str(itinerary.trip_id),
+                version=itinerary.version
+            )
+            
+            return DatabaseResult(
+                success=True,
+                data=itinerary.model_dump(),
+                affected_rows=1
+            )
+            
+        except Exception as e:
+            logger.error("itinerary_creation_failed", 
+                trip_id=itinerary_data.get("trip_id"),
+                error=str(e)
+            )
+            return DatabaseResult(
+                success=False,
+                error=str(e)
+            )
+
+    async def get_latest_itinerary(self, trip_id: UUID) -> DatabaseResult:
+        """
+        Get the latest itinerary for a trip.
+        
+        Args:
+            trip_id: UUID of the trip
+            
+        Returns:
+            DatabaseResult with Itinerary object or error
+        """
+        try:
+            response = await self._client.get(
+                f"{self.rest_url}/itineraries",
+                params={
+                    "trip_id": f"eq.{trip_id}",
+                    "order": "version.desc",
+                    "limit": "1",
+                    "select": "*"
+                }
+            )
+            response.raise_for_status()
+            
+            itineraries_data = response.json()
+            
+            if not itineraries_data:
+                return DatabaseResult(
+                    success=False,
+                    error=f"No itinerary found for trip {trip_id}"
+                )
+            
+            itinerary = Itinerary(**itineraries_data[0])
+            
+            logger.info("itinerary_retrieved", 
+                itinerary_id=str(itinerary.id),
+                trip_id=str(trip_id),
+                version=itinerary.version
+            )
+            
+            return DatabaseResult(
+                success=True,
+                data=itinerary.model_dump()
+            )
+            
+        except Exception as e:
+            logger.error("itinerary_retrieval_failed", 
+                trip_id=str(trip_id),
+                error=str(e)
+            )
+            return DatabaseResult(
+                success=False,
+                error=str(e)
+            )
+
+    async def get_agency_places(self, agency_id: UUID, destination_city: str = None) -> List[AgencyPlace]:
+        """
+        Get agency places for validation.
+        
+        Args:
+            agency_id: UUID of the agency
+            destination_city: Optional filter by destination city
+            
+        Returns:
+            List of AgencyPlace records
+        """
+        try:
+            params = {"agency_id": f"eq.{agency_id}", "select": "*"}
+            if destination_city:
+                params["city"] = f"eq.{destination_city}"
+            
+            response = await self._client.get(
+                f"{self.rest_url}/agency_places",
+                params=params
+            )
+            response.raise_for_status()
+            
+            places_data = response.json()
+            places = [AgencyPlace(**place_data) for place_data in places_data]
+            
+            logger.info("agency_places_retrieved", 
+                agency_id=str(agency_id),
+                city=destination_city,
+                count=len(places)
+            )
+            
+            return places
+            
+        except Exception as e:
+            logger.error("agency_places_retrieval_failed", 
+                agency_id=str(agency_id),
+                error=str(e)
+            )
+            return []
+
+    async def create_itinerary(self, itinerary_data: dict) -> DatabaseResult:
+        """
+        Create a new itinerary in the database.
+        
+        Args:
+            itinerary_data: Dict with itinerary fields
+            
+        Returns:
+            DatabaseResult with created Itinerary object or error
+        """
+        try:
+            response = await self._client.post(
+                f"{self.rest_url}/itineraries",
+                json=itinerary_data
+            )
+            response.raise_for_status()
+            
+            created_data = response.json()
+            
+            if not created_data:
+                raise ValueError("No data returned from itinerary creation")
+            
+            itinerary = Itinerary(**created_data[0])
+            
+            logger.info("itinerary_created", 
+                itinerary_id=str(itinerary.id),
+                trip_id=str(itinerary.trip_id),
+                version=itinerary.version
+            )
+            
+            return DatabaseResult(
+                success=True,
+                data=itinerary.model_dump(),
+                affected_rows=1
+            )
+            
+        except Exception as e:
+            logger.error("itinerary_creation_failed", 
+                trip_id=itinerary_data.get("trip_id"),
+                error=str(e)
+            )
+            return DatabaseResult(
+                success=False,
+                error=str(e)
+            )
+
+    async def get_latest_itinerary(self, trip_id: UUID) -> DatabaseResult:
+        """
+        Get the latest itinerary for a trip.
+        
+        Args:
+            trip_id: UUID of the trip
+            
+        Returns:
+            DatabaseResult with Itinerary object or error
+        """
+        try:
+            response = await self._client.get(
+                f"{self.rest_url}/itineraries",
+                params={
+                    "trip_id": f"eq.{trip_id}",
+                    "order": "version.desc",
+                    "limit": "1",
+                    "select": "*"
+                }
+            )
+            response.raise_for_status()
+            
+            itineraries_data = response.json()
+            
+            if not itineraries_data:
+                return DatabaseResult(
+                    success=False,
+                    error=f"No itinerary found for trip {trip_id}"
+                )
+            
+            itinerary = Itinerary(**itineraries_data[0])
+            
+            logger.info("itinerary_retrieved", 
+                itinerary_id=str(itinerary.id),
+                trip_id=str(trip_id),
+                version=itinerary.version
+            )
+            
+            return DatabaseResult(
+                success=True,
+                data=itinerary.model_dump()
+            )
+            
+        except Exception as e:
+            logger.error("itinerary_retrieval_failed", 
+                trip_id=str(trip_id),
+                error=str(e)
+            )
+            return DatabaseResult(
+                success=False,
+                error=str(e)
+            ) 

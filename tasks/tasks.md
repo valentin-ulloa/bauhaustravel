@@ -73,18 +73,105 @@ This agent:
 
 ---
 
-## TC-002: Implement Itinerary Agent  
-Status: Not Started  
-Priority: High  
+## TC-002 — Itinerary Agent  
+**Status:** Not Started  **Priority:** High  
 
-### Requirements
-- Generate day-by-day itinerary from destination & dates.
-- Use OpenAI API.
-- Store generated plan in Supabase.
+---
 
-### Acceptance Criteria
-1. Itinerary saved to DB.
-2. User receives formatted summary via WhatsApp.
+### 🎯 Objective  
+
+Implement the first version of Itinerary Agent to:
+
+✅ Generate a day-by-day itinerary based on trip + profile (+ optional agency places).  
+✅ Save it versioned in Supabase.  
+✅ Notify user via WhatsApp that itinerary is ready (via template).  
+✅ Allow triggering manually via API (to test with agencies and early B2C users).  
+
+---
+
+### 🛠️ Scope (MVP)
+
+| # | Task | Key Details |
+| - | ---- | ----------- |
+| 1️⃣ | **Input Handling** | Load `trip`, `flights`, `profile`. If `agency_id` present → load `agency_places`. |
+| 2️⃣ | **Itinerary Generation** | Build `raw_prompt` with full context. Call OpenAI (gpt-4o mini) or Perplexity. Save `raw_response`. |
+| 3️⃣ | **Validation** | For each place: if match in `agency_places` → `source = "agency"`; else → `source = "low_validation"`. |
+| 4️⃣ | **Parsed Itinerary** | Build parsed_itinerary JSON:  
+```json5
+{
+  "days": [
+    {
+      "date": "YYYY-MM-DD",
+      "items": [
+        {
+          "title": "…",
+          "type": "…",
+          "address": "…",
+          "city": "…",
+          "country": "…",
+          "lat": …,
+          "lng": …,
+          "opening_hours": "…",
+          "rating": null,
+          "source": "agency" | "low_validation",
+          "safety_warnings": [],
+          "tags": []
+        }
+      ]
+    }
+  ]
+}
+``` |
+| 5️⃣ | **Persistence** | Save parsed_itinerary to `itineraries` table (see migrations). First version: `version=1`, `status='draft'`. |
+| 6️⃣ | **Notify User (WhatsApp)** | Send WhatsApp template `itinerary_ready` via NotificationsAgent:<br>Example body:<br>_“¡Tu itinerario está listo! Responde 'Sí' si querés verlo completo.”_ |
+| 7️⃣ | **API Endpoint** | Implement `POST /itinerary?trip_id=uuid` to trigger itinerary generation manually. |
+
+---
+
+### ✅ Acceptance Criteria
+
+1. `parsed_itinerary` saved in `itineraries` with `trip_id`, `version`, `status`.  
+2. WhatsApp template `itinerary_ready` is sent after generation.  
+3. If `agency_places` matches ≥1 item → source = "agency".  
+4. Items without match → source = "low_validation".  
+5. `POST /itinerary` triggers generation and returns `201` with itinerary ID.  
+6. Unit tests cover: prompt build, agency validation, DB insert, WhatsApp send.
+
+---
+
+### 📂 Database Migrations
+
+```sql
+-- 002_create_itineraries.sql
+CREATE TABLE itineraries (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  trip_id uuid REFERENCES trips(id) ON DELETE CASCADE,
+  version int NOT NULL DEFAULT 1,
+  status text NOT NULL DEFAULT 'draft',  -- draft | approved | regenerating
+  generated_at timestamptz NOT NULL DEFAULT now(),
+  raw_prompt text,
+  raw_response text,
+  parsed_itinerary jsonb NOT NULL
+);
+CREATE INDEX ON itineraries (trip_id);
+
+-- 003_create_agency_places.sql
+CREATE TABLE agency_places (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  agency_id uuid,
+  name text,
+  address text,
+  city text,
+  country text,  -- ISO-2 code
+  lat double precision,
+  lng double precision,
+  type text,
+  rating numeric,
+  opening_hours text,
+  tags text[],
+  UNIQUE (agency_id, name, address)
+);
+CREATE INDEX ON agency_places (agency_id, city);
 
 ---
 

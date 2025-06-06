@@ -60,19 +60,42 @@
 
 ## POST /trips Endpoint ✅
 - ✅ **TripCreate model** → Pydantic validation with proper constraints
+- ✅ **WhatsApp validation** → Regex validation for international format (+1234567890)
+- ✅ **Duplicate prevention** → 409 Conflict if trip already exists (same phone + flight + date)
 - ✅ **create_trip() method** → SupabaseDBClient enhanced for trip creation
+- ✅ **check_duplicate_trip() method** → Validates uniqueness before creation
 - ✅ **POST /trips endpoint** → Clean Agent integration in app/router.py
 - ✅ **Automatic confirmations** → Uses NotificationsAgent.send_single_notification()
+- ✅ **client_description flow** → Properly stored and available for future Concierge agent
 - ✅ **Resource cleanup** → Proper async context management
-- ✅ **Error handling** → Full structured logging and HTTP status codes
+- ✅ **Error handling** → Full structured logging and HTTP status codes (409, 422, 500)
 - ✅ **DatabaseResult compliance** → All methods return proper dict data types
 
+## TC-002: Itinerary Agent ✅ → 🔄 Ready for Final Retesting (PRODUCTION HARDENED)
+- ✅ **ItineraryAgent class** → Autonomous agent following Agent pattern
+- ✅ **GPT-4o mini integration** → Updated to OpenAI>=1.0.0 client format
+- ✅ **Agency validation** → source="agency" vs "low_validation" based on agency_places
+- ✅ **Database persistence** → Saves to itineraries table with version/status
+- ✅ **WhatsApp notification** → Template "itinerario" (HXa031416ae1602595485bfda7df043545)
+- ✅ **POST /itinerary endpoint** → Manual trigger for itinerary generation
+- ✅ **Comprehensive error handling** → Fallback structure for failed generations
+- ✅ **Agency places matching** → Flexible lookup with name/address/city combinations
+- ✅ **OpenAI API updated** → Compatible with openai>=1.0.0 using OpenAI() client
+- ✅ **ROBUST VALIDATION** → Safe handling of unexpected LLM output values:
+  - ✅ **Source field normalization** → only "agency" or "low_validation" allowed
+  - ✅ **Safe type casting** → lat/lng/rating handle null/invalid values gracefully
+  - ✅ **Field validation** → title, type, address validated with fallbacks
+  - ✅ **List validation** → safety_warnings and tags ensured as lists
+- ✅ **JSON SERIALIZATION FIX** → trip_id converted to str() before passing to NotificationsAgent
+- ✅ **SECURE ERROR HANDLING** → HTTPException.detail never exposes str(e), full errors logged safely
+
 ## Pending (Future Tasks) ❌
-- ❌ TC-002: Itinerary Agent
 - ❌ TC-003: Concierge / Support Agent
 - ❌ AeroAPI integration for real flight status polling
 - ❌ APScheduler for automated polling system
 - ❌ Production deployment configuration
+- ❌ Unit tests for TC-002 (Itinerary Agent)
+- ❌ Handling WhatsApp replies ("Itinerario" response)
 
 ## Next Steps for Full System 🔄
 1. **Implement POST /trips** → proper Agent integration

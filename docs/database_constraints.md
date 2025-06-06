@@ -15,7 +15,8 @@ CHECK ((notification_type = ANY (ARRAY[
   'DELAYED'::text, 
   'GATE_CHANGE'::text, 
   'CANCELLED'::text, 
-  'BOARDING'::text
+  'BOARDING'::text,
+  'ITINERARY_READY'::text
 ])))
 ```
 
