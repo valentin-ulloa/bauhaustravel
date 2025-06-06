@@ -269,6 +269,10 @@ class SupabaseDBClient:
                 f"{self.rest_url}/notifications_log",
                 json=notification_data
             )
+            # 👈 aquí es donde necesitamos ver el detalle
+            if response.status_code >= 400:
+                print("📄 SUPABASE ERROR:", response.status_code, response.text)
+                
             response.raise_for_status()
             
             created_record = response.json()

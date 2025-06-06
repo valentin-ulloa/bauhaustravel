@@ -1,6 +1,7 @@
 """NotificationsAgent for Bauhaus Travel - handles flight notifications via WhatsApp."""
 
 import os
+import json
 import asyncio
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Dict, Any
@@ -39,6 +40,10 @@ class NotificationsAgent:
             raise ValueError("Missing Twilio credentials in environment variables")
         
         self.twilio_client = TwilioClient(account_sid, auth_token)
+        service_sid = os.getenv("TWILIO_MESSAGING_SERVICE_SID")
+        if not service_sid:
+            raise ValueError("Missing TWILIO_MESSAGING_SERVICE_SID")
+        self.messaging_service_sid = service_sid
         
         logger.info("notifications_agent_initialized", 
             twilio_phone=self.twilio_phone
@@ -320,26 +325,41 @@ class NotificationsAgent:
                 notification_type=notification_type
             )
             
-            # Send actual WhatsApp message via Twilio
-            message = self.twilio_client.messages.create(
+            # Log the full payload to Twilio
+            logger.info("twilio_message_payload", 
                 from_=self.twilio_phone,
                 to=f"whatsapp:{trip.whatsapp}",
-                content_sid=message_data["template_sid"],
+                template_sid=message_data["template_sid"],
                 content_variables=message_data["template_variables"]
+            )
+
+            # Extra: print to always see in console
+            print("🚀 TEMPLATE SID:", message_data["template_sid"])
+            print("🚀 PAYLOAD A TWILIO:", message_data["template_variables"])
+
+            # Send actual WhatsApp message via Twilio
+            message = self.twilio_client.messages.create(
+                messaging_service_sid=self.messaging_service_sid,                    # MGxxxxxxxx…
+                to=f"whatsapp:{trip.whatsapp}",
+                content_sid=message_data["template_sid"],                            # HXb7773214…
+                content_variables=json.dumps(message_data["template_variables"])     # string JSON
             )
             message_sid = message.sid
             
+            # 👇 justo antes de llamar al logger
+            notification_type_db = notification_type.value.upper()
+
             # Log the notification
             log_result = await self.db_client.log_notification_sent(
                 trip_id=trip.id,
-                notification_type=notification_type,
+                notification_type=notification_type_db,  # CORRECTO
                 sent_at=datetime.now(timezone.utc),
                 status="SENT",
                 template_name=message_data["template_name"],
                 twilio_message_sid=message_sid,
                 retry_count=0
             )
-            
+
             if log_result.success:
                 logger.info("notification_sent_successfully", 
                     trip_id=str(trip.id),
@@ -353,12 +373,12 @@ class NotificationsAgent:
                     error=log_result.error
                 )
                 return DatabaseResult(success=False, error="Failed to log notification")
-        
+
         except Exception as e:
             # Log failed attempt
             await self.db_client.log_notification_sent(
                 trip_id=trip.id,
-                notification_type=notification_type,
+                notification_type=notification_type_db,  # CORRECTO
                 sent_at=datetime.now(timezone.utc),
                 status="FAILED",
                 template_name=WhatsAppTemplates.get_template_info(notification_type)["name"],
@@ -393,7 +413,7 @@ class NotificationsAgent:
             "flight_number": trip.flight_number,
             "origin_iata": trip.origin_iata,
             "destination_iata": trip.destination_iata,
-            "departure_time": trip.departure_date.strftime("%d/%m/%Y %H:%M"),
+            "departure_date": trip.departure_date.isoformat(),
             "status": trip.status
         }
         

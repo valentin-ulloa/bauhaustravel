@@ -2,6 +2,7 @@
 
 from typing import Dict, Any
 from enum import Enum
+from datetime import datetime
 
 
 class NotificationType(str, Enum):
@@ -20,8 +21,8 @@ class WhatsAppTemplates:
     # Actual Twilio template SIDs and names
     TEMPLATES = {
         NotificationType.RESERVATION_CONFIRMATION: {
-            "name": "confirmacion_reserva", 
-            "sid": "HX01a541412cda42dd91bff6995fdc3f4a"
+            "name": "copy_confirmacion_reserva", 
+            "sid": "HXb777321419cee086713f1cb529d7fe51"
         },
         NotificationType.REMINDER_24H: {
             "name": "recordatorio_24h",
@@ -157,8 +158,13 @@ class WhatsAppTemplates:
         Format reservation confirmation notification.
         
         Template: confirmacion_reserva (HX01a541412cda42dd91bff6995fdc3f4a)
-        Variables: {{1}} name, {{2}} flight_number, {{3}} origin, {{4}} destination, {{5}} departure_date
+        Variables: {{1}} name, {{2}} flight_number, {{3}} origin, {{4}} destination, {{5}} departure_date (formatted as hh:mm hs)
         """
+        # Convert ISO date to datetime and format as "hh:mm hs"
+        # trip_data["departure_date"] viene en ISO, p.ej. "2025-06-07T22:45:00Z"
+        departure_time_str = datetime.fromisoformat(trip_data["departure_date"])
+        formatted_time = departure_time_str.strftime("%-d %b %H:%M hs")  # Ej.: "22:45 hs"
+        
         template_info = cls.TEMPLATES[NotificationType.RESERVATION_CONFIRMATION]
         return {
             "template_sid": template_info["sid"],
@@ -168,7 +174,7 @@ class WhatsAppTemplates:
                 "2": trip_data["flight_number"],     # flight_number
                 "3": trip_data["origin_iata"],       # origin
                 "4": trip_data["destination_iata"],  # destination
-                "5": trip_data["departure_time"]     # departure_date
+                "5": formatted_time                  # departure_date (formatted as hh:mm hs)
             }
         }
     

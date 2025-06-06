@@ -81,6 +81,13 @@
 4. **Add AeroAPI integration** for real flight status
 5. **Implement TC-002** (Itinerary Agent)
 
+## Bug Fixes ✅
+- ✅ **Twilio Error 21656 FIXED** → `format_reservation_confirmation()` now formats time as "hh:mm hs"
+- ✅ **Template variable formatting** → All 6 templates verified working correctly
+- ✅ **POST /trips endpoint** → Now sends reservation confirmations without errors
+- ✅ **Database constraint mismatch FIXED** → `notifications_log` constraint now matches NotificationType enum
+- ✅ **Pydantic model updated** → NotificationLog.notification_type now uses UPPERCASE values
+
 ## Known Issues & Decisions ✅
 - ✅ **Migration 002 rejected** → requires pg_net (not available in Supabase Free)
 - ✅ **Webhook approach abandoned** → violates Agent architecture pattern

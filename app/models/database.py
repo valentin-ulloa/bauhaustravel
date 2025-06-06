@@ -40,12 +40,12 @@ class NotificationLog(BaseModel):
     id: Optional[UUID] = None
     trip_id: UUID
     notification_type: Literal[
-        "reservation_confirmation", 
-        "reminder_24h", 
-        "delayed", 
-        "gate_change", 
-        "cancelled", 
-        "boarding"
+        "RESERVATION_CONFIRMATION", 
+        "REMINDER_24H", 
+        "DELAYED", 
+        "GATE_CHANGE", 
+        "CANCELLED", 
+        "BOARDING"
     ]
     template_name: str
     delivery_status: Literal["SENT", "FAILED", "PENDING"] = "PENDING"

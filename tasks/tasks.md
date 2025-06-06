@@ -1,95 +1,102 @@
 # Current Sprint Tasks
 
-## TC-001: Implement Flight Notifications Agent
-Status: In Progress
-Priority: High
+## TC-001: Implement Flight Notifications Agent  
+Status: In Progress  
+Priority: High  
 
-### Purpose
+### Purpose  
 Provide users with proactive and timely flight updates via WhatsApp:
-- Remind users of their upcoming flights.
-- Alert users to any critical changes (delay / gate / cancel).
+- Send **reservation confirmation** at trip creation (POST /trips).
+- Remind users of upcoming flights (24h).
+- Alert users to critical changes (delay / gate / cancel).
 - Welcome users upon landing.
 
-### Scope
-This agent:
-✅ Sends **push notifications** only (no chat) via **Twilio WhatsApp approved templates**.  
-✅ Triggers based on **flight timing** and **AeroAPI status**.  
-✅ Reads / writes exclusively to Supabase tables (`flights`, `notifications_log`).  
-❌ Does **not** handle hotel info, tips, or conversational replies.
+### Scope  
+This agent:  
+✅ Sends **push notifications only** via **Twilio WhatsApp approved templates**.  
+✅ Triggered by API (POST /trips), scheduler, or AeroAPI polling.  
+✅ Reads / writes to Supabase tables: `trips`, `notifications_log`.  
+❌ Does not handle hotel info, tips, or conversational replies.
 
-### Triggers and Messages
+### Triggers and Templates
 
-| Trigger | Message (Twilio template) | Send window |
-|---------|---------------------------|-------------|
-| 24 h before `departure_time` | Flight confirmation | **Only 09:00 – 20:00** local time. If the nominal send-time falls outside, schedule for 09:00 local. |
-| Flight status change (delay / gate / cancel) | Flight update | Dynamic polling (see below) |
-| Flight status == **LANDED** | Welcome message | Detected via polling |
+| Trigger | Message (Twilio template) | Notes |
+|---------|---------------------------|-------|
+| **POST /trips** (new trip created) | `confirmacion_reserva` | Triggered immediately via `send_single_notification()` |
+| 24 h before `departure_date` | `recordatorio_24h` | Only between 09:00–20:00 local time; if outside, schedule for 09:00 |
+| Flight DELAYED | `demorado` | Triggered via AeroAPI polling |
+| Gate CHANGE | `cambio_gate` | Triggered via AeroAPI polling |
+| CANCELLED | `cancelado` | Triggered via AeroAPI polling |
+| BOARDING | `embarcando` | (optional future trigger) |
+| LANDED | (To be defined) | Send welcome message upon landing |
 
 ### Acceptance Criteria
 
 | ID | Given / When / Then |
 |----|---------------------|
-| AC-1 | **Given** a flight record, **when** it reaches 24 h before departure, **then** the user receives a WhatsApp confirmation (template) inside the 09-20 h window. |
-| AC-2 | **Given** an active flight, **when** AeroAPI reports delay / gate / cancel, **then** the user is notified once per change (template) and `notifications_log` stores `SENT`. |
-| AC-3 | **Given** a flight whose status becomes **LANDED**, **then** the user receives a welcome message and log entry. |
-| AC-4 | **Given** a delivery failure, **then** the agent retries up to 3× with exponential back-off and logs `FAILED` after the final attempt. |
+| AC-1 | **Given** a new trip is created via `POST /trips`, **then** the user receives `confirmacion_reserva` WhatsApp message. |
+| AC-2 | **Given** a flight is 24h from `departure_date`, **then** user receives `recordatorio_24h` in allowed time window. |
+| AC-3 | **Given** AeroAPI reports **delay / gate / cancel**, **then** user receives proper update template, once per change. |
+| AC-4 | **Given** flight reaches **LANDED**, **then** user receives welcome message. |
+| AC-5 | **Given** a delivery fails, **then** agent retries up to 3× with backoff and logs final result. |
 
 ### Data / Persistence
-- **Reads** from `flights` (flight_id, user_phone, departure_time, arrival_city, status, next_poll_at).
-- **Writes** to `notifications_log` (flight_id, notification_type, timestamp, delivery_status).
+- Reads: `trips` (trip_id, whatsapp, departure_date, status, next_check_at)
+- Writes: `notifications_log` (trip_id, notification_type, sent_at, delivery_status, etc.)
 
 ### External Services
-- **AeroAPI** – flight status & changes  
-- **Twilio WhatsApp** – message delivery (templates)  
-- **OpenWeather** (future) – not used in this task
+- **AeroAPI** — flight status
+- **Twilio WhatsApp** — templates:
+    - `confirmacion_reserva` (SID HX01a541412cda42dd91bff6995fdc3f4a)
+    - `recordatorio_24h` (SID HXf79f6f380e09de4f1b953f7045c6aa19)
+    - `demorado` (SID HXd5b757e51d032582949292a65a5afee1)
+    - `cambio_gate` (SID HXd38d96ab6414b96fe214b132253c364e)
+    - `cancelado` (SID HX1672fabd1ce98f5b7d06f1306ba3afcc)
+    - `embarcando` (SID HX3571933547ed2f3b6e4c6dc64a84f3b7)
 
 ### Technical Notes
-- Convert `departure_time` to the **origin airport’s timezone** using `zoneinfo`.
-- 24 h reminder: if send-time < 09:00 or ≥ 20:00, schedule for 09:00 same day.
-- **Schedulers** (APScheduler or Supabase cron):
-  - `schedule_24h_reminders()` runs daily.
-  - `poll_flight_changes()` runs every 15 min and filters by `next_poll_at`.
-  - `poll_landed_flights()` runs every 15 min (same filter).
-- Use `httpx.AsyncClient` (timeout 10 s) for AeroAPI; exponential-back-off retry helper.
-- Message creation centralised in `NotificationsAgent.format_message()`.
-- All WhatsApp templates and variable mappings defined in `notifications_templates.py`.
+- On `POST /trips`, agent immediately sends `RESERVATION_CONFIRMATION`.
+- `schedule_24h_reminders()` runs daily.
+- `poll_flight_changes()` runs every 15 min, filters by `next_check_at`.
+- `poll_landed_flights()` runs every 15 min.
+- Template variables mapped in `notifications_templates.py`.
+- Message sending centralized in `NotificationsAgent.send_notification()`.
 
 ### Poll Optimisation
+
 | Time until departure | Next poll interval |
 |----------------------|--------------------|
-| > 24 h               | +6 h |
-| 24 h – 4 h           | +1 h |
-| ≤ 4 h                | +15 min |
-| **In-flight**        | +30 min (to detect LANDED) |
-
-- Column `next_poll_at` updated after each poll.  
-- `poll_flight_changes()` queries: `WHERE next_poll_at <= NOW() AT TIME ZONE 'UTC'`.
+| > 24 h | +6 h |
+| 24h–4h | +1 h |
+| ≤ 4h | +15 min |
+| In-flight | +30 min |
 
 ---
 
-## TC-002: Implement Itinerary Agent
-Status: Not Started
-Priority: High
+## TC-002: Implement Itinerary Agent  
+Status: Not Started  
+Priority: High  
 
 ### Requirements
-- Generate day-by-day itinerary from destination & dates
-- Use OpenAI API
-- Store generated plan in Supabase
+- Generate day-by-day itinerary from destination & dates.
+- Use OpenAI API.
+- Store generated plan in Supabase.
 
 ### Acceptance Criteria
-1. Itinerary saved to DB
-2. User receives formatted summary via WhatsApp
+1. Itinerary saved to DB.
+2. User receives formatted summary via WhatsApp.
 
 ---
 
-## TC-003: Implement Concierge / Support Agent
-Status: Not Started
-Priority: High
+## TC-003: Implement Concierge / Support Agent  
+Status: Not Started  
+Priority: High  
 
 ### Requirements
-- Answer FAQs and give local recommendations
-- Maintain conversation memory (conversations table)
+- Answer FAQs and give local recommendations.
+- Maintain conversation memory (`conversations` table).
 
 ### Acceptance Criteria
-1. Follow-up questions reference prior context
-2. Response latency <3 s
+1. Follow-up questions reference prior context.
+2. Response latency <3 s.
+
