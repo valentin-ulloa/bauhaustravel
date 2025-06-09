@@ -167,7 +167,7 @@ class WhatsAppTemplates:
         """
         # Convert ISO date to datetime and format as "hh:mm hs"
         # trip_data["departure_date"] viene en ISO, p.ej. "2025-06-07T22:45:00Z"
-        departure_time_str = datetime.fromisoformat(trip_data["departure_date"])
+        departure_time_str = datetime.fromisoformat(trip_data["departure_date"].replace('Z', '+00:00'))
         formatted_time = departure_time_str.strftime("%-d %b %H:%M hs")  # Ej.: "22:45 hs"
         
         template_info = cls.TEMPLATES[NotificationType.RESERVATION_CONFIRMATION]

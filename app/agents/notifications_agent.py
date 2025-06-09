@@ -313,6 +313,9 @@ class NotificationsAgent:
         Returns:
             DatabaseResult with send status
         """
+        # Initialize notification_type_db early for exception handling
+        notification_type_db = notification_type.value.upper()
+        
         try:
             # Format message using templates
             message_data = self.format_message(trip, notification_type, extra_data)
@@ -345,9 +348,6 @@ class NotificationsAgent:
                 content_variables=json.dumps(message_data["template_variables"])     # string JSON
             )
             message_sid = message.sid
-            
-            # 👇 justo antes de llamar al logger
-            notification_type_db = notification_type.value.upper()
 
             # Log the notification
             log_result = await self.db_client.log_notification_sent(

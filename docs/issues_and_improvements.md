@@ -1,5 +1,29 @@
 # Issues & Improvements - Bauhaus Travel Bot
 
+## 🚨 **PRODUCTION BUGS** (CRITICAL PRIORITY)
+
+### Bug #1: Notification Variable Error in Production
+**Error:** `cannot access local variable 'notification_type_db' where it is not associated with a value`
+
+**Context:**
+- POST /trips creates trip successfully (ID: 66d200cb-ca2f-449c-abc4-51aae3661b34)
+- Trip data saved to database ✅
+- Notification sending fails ❌
+- Status returned: "confirmation_failed"
+
+**Location:** Likely in NotificationsAgent.send_single_notification() or related method
+**Impact:** Users don't receive reservation confirmation WhatsApp messages
+**Fix Required:** 1-line variable initialization fix
+
+**Test Case:**
+```bash
+curl -X POST https://web-production-92d8d.up.railway.app/trips \
+  -H "Content-Type: application/json" \
+  -d '{"client_name": "Test", "whatsapp": "+1234567890", "destination": "Miami", "departure_date": "2025-06-15", "return_date": "2025-06-20", "client_description": "test", "flight_number": "AA1234", "origin_iata": "LAX", "destination_iata": "MIA"}'
+```
+
+---
+
 ## 🐛 **UX Issues - Document Handling** (HIGH PRIORITY)
 
 ### Issue #1: Bot no envía documentos reales
