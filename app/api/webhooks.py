@@ -1,13 +1,14 @@
 """FastAPI webhooks for Bauhaus Travel."""
 
-from fastapi import APIRouter, HTTPException, BackgroundTasks
+from fastapi import APIRouter, HTTPException, BackgroundTasks, Request, Form
 from pydantic import BaseModel
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from datetime import datetime, timezone
 import structlog
 
 from ..agents.notifications_agent import NotificationsAgent
 from ..agents.notifications_templates import NotificationType
+from ..agents.concierge_agent import ConciergeAgent
 from ..models.database import Trip
 
 logger = structlog.get_logger()
@@ -20,6 +21,17 @@ class TripInsertPayload(BaseModel):
     table: str  # "trips"
     record: Dict[str, Any]  # The inserted trip data
     schema: str = "public"
+
+
+class TwilioInboundMessage(BaseModel):
+    """Twilio WhatsApp inbound message payload."""
+    MessageSid: str
+    From: str  # "whatsapp:+1234567890"
+    To: str    # "whatsapp:+13613094264" 
+    Body: str
+    NumMedia: Optional[str] = "0"
+    MediaUrl0: Optional[str] = None
+    MediaContentType0: Optional[str] = None
 
 
 @router.post("/trip-confirmation")
@@ -81,6 +93,119 @@ async def trip_confirmation_webhook(
         raise HTTPException(status_code=500, detail="Webhook processing failed")
 
 
+@router.post("/twilio")
+async def twilio_whatsapp_webhook(
+    background_tasks: BackgroundTasks,
+    MessageSid: str = Form(...),
+    From: str = Form(...),
+    To: str = Form(...),
+    Body: str = Form(...),
+    NumMedia: str = Form(default="0"),
+    MediaUrl0: Optional[str] = Form(default=None),
+    MediaContentType0: Optional[str] = Form(default=None)
+):
+    """
+    Webhook to receive incoming WhatsApp messages from Twilio.
+    Processes user messages via ConciergeAgent.
+    """
+    # Extract phone number (remove "whatsapp:" prefix)
+    whatsapp_number = From.replace("whatsapp:", "")
+    
+    logger.info("twilio_inbound_message_received",
+        message_sid=MessageSid,
+        from_number=whatsapp_number,
+        body_length=len(Body),
+        has_media=NumMedia != "0"
+    )
+    
+    try:
+        # Add background task to process message
+        background_tasks.add_task(
+            process_inbound_message,
+            whatsapp_number,
+            Body,
+            MediaUrl0,
+            MediaContentType0,
+            MessageSid
+        )
+        
+        logger.info("inbound_message_queued",
+            message_sid=MessageSid,
+            from_number=whatsapp_number
+        )
+        
+        # Return empty response (Twilio doesn't expect content)
+        return ""
+        
+    except Exception as e:
+        logger.error("twilio_webhook_failed",
+            error_code="TWILIO_WEBHOOK_ERROR", 
+            error=str(e),
+            message_sid=MessageSid,
+            from_number=whatsapp_number
+        )
+        # Still return empty to avoid Twilio retries
+        return ""
+
+
+async def process_inbound_message(
+    whatsapp_number: str,
+    message_body: str,
+    media_url: Optional[str],
+    media_type: Optional[str],
+    message_sid: str
+):
+    """
+    Background task to process inbound WhatsApp message.
+    """
+    concierge_agent = None
+    
+    try:
+        logger.info("processing_inbound_message",
+            from_number=whatsapp_number,
+            message_sid=message_sid,
+            has_media=media_url is not None
+        )
+        
+        # Initialize ConciergeAgent
+        concierge_agent = ConciergeAgent()
+        
+        # Process the message
+        result = await concierge_agent.handle_inbound_message(
+            whatsapp_number=whatsapp_number,
+            message_body=message_body,
+            media_url=media_url,
+            media_type=media_type,
+            message_sid=message_sid
+        )
+        
+        if result.success:
+            logger.info("inbound_message_processed",
+                from_number=whatsapp_number,
+                message_sid=message_sid,
+                response_sent=True
+            )
+        else:
+            logger.error("inbound_message_processing_failed",
+                error_code="MESSAGE_PROCESSING_FAILED",
+                from_number=whatsapp_number,
+                message_sid=message_sid,
+                error=result.error
+            )
+    
+    except Exception as e:
+        logger.error("inbound_message_task_failed",
+            error_code="BACKGROUND_TASK_ERROR",
+            from_number=whatsapp_number,
+            message_sid=message_sid,
+            error=str(e)
+        )
+    
+    finally:
+        if concierge_agent:
+            await concierge_agent.close()
+
+
 async def send_booking_confirmation(trip: Trip):
     """
     Background task to send booking confirmation via WhatsApp.
@@ -98,7 +223,7 @@ async def send_booking_confirmation(trip: Trip):
         # Send booking confirmation
         result = await agent.send_notification(
             trip=trip,
-            notification_type=NotificationType.BOOKING_CONFIRMATION
+            notification_type=NotificationType.RESERVATION_CONFIRMATION
         )
         
         if result.success:

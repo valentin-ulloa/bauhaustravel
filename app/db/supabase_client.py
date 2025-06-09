@@ -1,8 +1,8 @@
 """Supabase database client for Bauhaus Travel."""
 
 import os
-from datetime import datetime, timedelta
-from typing import List, Optional
+from datetime import datetime, timedelta, timezone
+from typing import List, Optional, Dict, Any
 from uuid import UUID
 import httpx
 import structlog
@@ -520,85 +520,108 @@ class SupabaseDBClient:
                 error=str(e)
             )
 
-    async def get_agency_places(self, agency_id: UUID, destination_city: str = None) -> List[AgencyPlace]:
+    # TC-003: User identification and conversation methods
+    
+    async def get_latest_trip_by_whatsapp(self, whatsapp: str, within_days: int = 90) -> Optional[Trip]:
         """
-        Get agency places for validation.
+        Get the most recent trip for a WhatsApp number (for user identification).
         
         Args:
-            agency_id: UUID of the agency
-            destination_city: Optional filter by destination city
+            whatsapp: WhatsApp phone number
+            within_days: Only consider trips within this many days
             
         Returns:
-            List of AgencyPlace records
+            Trip object if found, None otherwise
         """
         try:
-            params = {"agency_id": f"eq.{agency_id}", "select": "*"}
-            if destination_city:
-                params["city"] = f"eq.{destination_city}"
+            # Calculate cutoff date
+            cutoff_date = datetime.now(timezone.utc) - timedelta(days=within_days)
+            
+            params = {
+                "whatsapp": f"eq.{whatsapp}",
+                "departure_date": f"gte.{cutoff_date.isoformat()}",
+                "select": "*",
+                "order": "departure_date.desc",
+                "limit": "1"
+            }
             
             response = await self._client.get(
-                f"{self.rest_url}/agency_places",
+                f"{self.rest_url}/trips",
                 params=params
             )
             response.raise_for_status()
             
-            places_data = response.json()
-            places = [AgencyPlace(**place_data) for place_data in places_data]
+            trips_data = response.json()
             
-            logger.info("agency_places_retrieved", 
-                agency_id=str(agency_id),
-                city=destination_city,
-                count=len(places)
-            )
-            
-            return places
+            if trips_data:
+                trip = Trip(**trips_data[0])
+                logger.info("trip_identified_by_whatsapp", 
+                    whatsapp=whatsapp,
+                    trip_id=str(trip.id),
+                    flight_number=trip.flight_number
+                )
+                return trip
+            else:
+                logger.info("no_recent_trip_found", 
+                    whatsapp=whatsapp,
+                    within_days=within_days
+                )
+                return None
             
         except Exception as e:
-            logger.error("agency_places_retrieval_failed", 
-                agency_id=str(agency_id),
+            logger.error("trip_identification_failed", 
+                whatsapp=whatsapp,
                 error=str(e)
             )
-            return []
+            return None
 
-    async def create_itinerary(self, itinerary_data: dict) -> DatabaseResult:
+    async def create_conversation(self, trip_id: UUID, sender: str, message: str, intent: Optional[str] = None) -> DatabaseResult:
         """
-        Create a new itinerary in the database.
+        Log a conversation message.
         
         Args:
-            itinerary_data: Dict with itinerary fields
+            trip_id: UUID of the trip
+            sender: 'user' or 'bot'
+            message: Message content
+            intent: Optional detected intent
             
         Returns:
-            DatabaseResult with created Itinerary object or error
+            DatabaseResult with created conversation record
         """
         try:
+            conversation_data = {
+                "trip_id": str(trip_id),
+                "sender": sender,
+                "message": message,
+                "intent": intent,
+                "created_at": datetime.now(timezone.utc).isoformat()
+            }
+            
             response = await self._client.post(
-                f"{self.rest_url}/itineraries",
-                json=itinerary_data
+                f"{self.rest_url}/conversations",
+                json=conversation_data
             )
             response.raise_for_status()
             
             created_data = response.json()
             
-            if not created_data:
-                raise ValueError("No data returned from itinerary creation")
-            
-            itinerary = Itinerary(**created_data[0])
-            
-            logger.info("itinerary_created", 
-                itinerary_id=str(itinerary.id),
-                trip_id=str(itinerary.trip_id),
-                version=itinerary.version
+            logger.info("conversation_logged", 
+                trip_id=str(trip_id),
+                sender=sender,
+                intent=intent,
+                message_length=len(message)
             )
             
             return DatabaseResult(
                 success=True,
-                data=itinerary.model_dump(),
+                data=created_data[0] if created_data else None,
                 affected_rows=1
             )
             
         except Exception as e:
-            logger.error("itinerary_creation_failed", 
-                trip_id=itinerary_data.get("trip_id"),
+            logger.error("conversation_logging_failed", 
+                trip_id=str(trip_id),
+                sender=sender,
                 error=str(e)
             )
             return DatabaseResult(
@@ -606,55 +629,132 @@ class SupabaseDBClient:
                 error=str(e)
             )
 
-    async def get_latest_itinerary(self, trip_id: UUID) -> DatabaseResult:
+    async def get_recent_conversations(self, trip_id: UUID, limit: int = 10) -> List[Dict[str, Any]]:
         """
-        Get the latest itinerary for a trip.
+        Get recent conversation history for context.
         
         Args:
             trip_id: UUID of the trip
+            limit: Number of recent messages to retrieve
             
         Returns:
-            DatabaseResult with Itinerary object or error
+            List of conversation records
         """
         try:
+            params = {
+                "trip_id": f"eq.{trip_id}",
+                "select": "*",
+                "order": "created_at.desc",
+                "limit": str(limit)
+            }
+            
             response = await self._client.get(
-                f"{self.rest_url}/itineraries",
-                params={
-                    "trip_id": f"eq.{trip_id}",
-                    "order": "version.desc",
-                    "limit": "1",
-                    "select": "*"
-                }
+                f"{self.rest_url}/conversations",
+                params=params
             )
             response.raise_for_status()
             
-            itineraries_data = response.json()
+            conversations_data = response.json()
             
-            if not itineraries_data:
-                return DatabaseResult(
-                    success=False,
-                    error=f"No itinerary found for trip {trip_id}"
-                )
+            # Reverse to get chronological order (oldest first)
+            conversations_data.reverse()
             
-            itinerary = Itinerary(**itineraries_data[0])
-            
-            logger.info("itinerary_retrieved", 
-                itinerary_id=str(itinerary.id),
+            logger.info("conversations_retrieved", 
                 trip_id=str(trip_id),
-                version=itinerary.version
+                count=len(conversations_data)
+            )
+            
+            return conversations_data
+            
+        except Exception as e:
+            logger.error("conversations_retrieval_failed", 
+                trip_id=str(trip_id),
+                error=str(e)
+            )
+            return []
+
+    async def create_document(self, document_data: dict) -> DatabaseResult:
+        """
+        Store a new document record.
+        
+        Args:
+            document_data: Dict with document fields including audit info
+            
+        Returns:
+            DatabaseResult with created document record
+        """
+        try:
+            response = await self._client.post(
+                f"{self.rest_url}/documents",
+                json=document_data
+            )
+            response.raise_for_status()
+            
+            created_data = response.json()
+            
+            logger.info("document_created", 
+                trip_id=document_data.get("trip_id"),
+                document_type=document_data.get("type"),
+                uploaded_by=document_data.get("uploaded_by"),
+                uploaded_by_type=document_data.get("uploaded_by_type")
             )
             
             return DatabaseResult(
                 success=True,
-                data=itinerary.model_dump()
+                data=created_data[0] if created_data else None,
+                affected_rows=1
             )
             
         except Exception as e:
-            logger.error("itinerary_retrieval_failed", 
-                trip_id=str(trip_id),
+            logger.error("document_creation_failed", 
+                trip_id=document_data.get("trip_id"),
                 error=str(e)
             )
             return DatabaseResult(
                 success=False,
                 error=str(e)
-            ) 
+            )
+
+    async def get_documents_by_trip(self, trip_id: UUID, document_type: Optional[str] = None) -> List[Dict[str, Any]]:
+        """
+        Get documents for a trip.
+        
+        Args:
+            trip_id: UUID of the trip
+            document_type: Optional filter by document type
+            
+        Returns:
+            List of document records
+        """
+        try:
+            params = {
+                "trip_id": f"eq.{trip_id}",
+                "select": "*",
+                "order": "uploaded_at.desc"
+            }
+            
+            if document_type:
+                params["type"] = f"eq.{document_type}"
+            
+            response = await self._client.get(
+                f"{self.rest_url}/documents",
+                params=params
+            )
+            response.raise_for_status()
+            
+            documents_data = response.json()
+            
+            logger.info("documents_retrieved", 
+                trip_id=str(trip_id),
+                document_type=document_type,
+                count=len(documents_data)
+            )
+            
+            return documents_data
+            
+        except Exception as e:
+            logger.error("documents_retrieval_failed", 
+                trip_id=str(trip_id),
+                error=str(e)
+            )
+            return [] 

@@ -175,15 +175,138 @@ CREATE INDEX ON agency_places (agency_id, city);
 
 ---
 
-## TC-003: Implement Concierge / Support Agent  
-Status: Not Started  
-Priority: High  
 
-### Requirements
-- Answer FAQs and give local recommendations.
-- Maintain conversation memory (`conversations` table).
+## TC-003 — Implement Concierge / Support Agent
 
-### Acceptance Criteria
-1. Follow-up questions reference prior context.
-2. Response latency <3 s.
+**Status:** Not Started  **Priority:** High
+
+---
+
+### 🎯 Purpose
+
+Provide travelers with a **conversational assistant via WhatsApp** to:
+
+✅ Answer questions about their **itinerary**.
+✅ Provide **local recommendations** (restaurants, activities, tips).
+✅ Assist with **flight issues** (delays, cancellations, changes).
+✅ Send **boarding pass** and travel **documents** (PDFs).
+✅ Share **reservations** (hotels, car rentals, transfers, insurance).
+✅ Maintain **conversation memory** for coherent follow-ups.
+
+---
+
+### 🛠️ Scope (MVP)
+
+| #   | Task                             | Key Details                                                                                                                                                                                                                                                        |
+| --- | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 1️⃣ | **Inbound Webhook**              | Implement `/webhooks/twilio` endpoint to receive incoming messages.<br>Extract `from_phone`, `body`, `media`, `timestamp`.                                                                                                                                         |
+| 2️⃣ | **Conversation Memory**          | Create `conversations` table.<br>Log each turn (`user`/`bot`) with timestamp and content.                                                                                                                                                                          |
+| 3️⃣ | **ConciergeAgent.run()**         | Identify `trip_id` via `trips.whatsapp`.<br>Load: itinerary, flights, documents, conversation history.<br>Generate response via GPT-4o mini.<br>Return `{ text, attachments? }`.                                                                                   |
+| 4️⃣ | **Document Storage & Retrieval** | Create `documents` table to store links to files (boarding pass, hotel, car rental, transfers, insurance).<br>Enable ConciergeAgent to retrieve and send documents when requested.                                                                                 |
+| 5️⃣ | **Response Flow**                | Use `NotificationsAgent.send_free_text()` to send responses.<br>Attach files or links when applicable.                                                                                                                                                             |
+| 6️⃣ | **Basic Intents**                | Initial supported intents:<br>• "Itinerario" → send parsed itinerary.<br>• "Boarding pass" → send boarding PDF.<br>• "Vuelo" → send flight status.<br>• "Hotel", "Auto", "Seguro", etc. → send corresponding documents.<br>• Free-form questions → handled by LLM. |
+| 7️⃣ | **Error Handling**               | If LLM fails or times out, send fallback message and log error.                                                                                                                                                                                                    |
+
+---
+
+### ✅ Acceptance Criteria
+
+| ID   | Given / When / Then                                                                                                                                   |
+| ---- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| AC-1 | **Given** a message is received on WhatsApp, **then** it is stored in `conversations`.                                                                |
+| AC-2 | **Given** a user asks for "Itinerario", **then** parsed itinerary is sent in ≤ 3 seconds.                                                             |
+| AC-3 | **Given** a user asks for "Boarding pass", **then** the correct PDF is sent.                                                                          |
+| AC-4 | **Given** a user asks for any stored reservation (hotel, car rental, transfer, insurance), **then** the corresponding document is retrieved and sent. |
+| AC-5 | **Given** a user asks a follow-up question ("And what about day 2?"), **then** the reply uses conversation context.                                   |
+| AC-6 | **Given** an internal error occurs, **then** a fallback message is sent and the error is logged.                                                      |
+
+---
+
+### 📂 Data / Persistence
+
+* **Reads**:
+
+  * `trips` (trip\_id, whatsapp, client\_name)
+  * `itineraries.parsed_itinerary`
+  * `flights` (status, gate, delay)
+  * `documents` (file\_url, type)
+  * `conversations` (last N messages)
+
+* **Writes**:
+
+  * `conversations` (trip\_id, sender, message, timestamp, intent)
+  * `errors_log` (if applicable)
+
+---
+
+### 🔌 External Services
+
+* **Twilio WhatsApp** — inbound & outbound messages.
+* **OpenAI GPT-4o mini** — response generation with tools.
+* **Supabase Storage** — document storage (PDFs, links).
+
+---
+
+### ⚙️ Technical Notes
+
+* `ConciergeAgent.run(trip_id, incoming_message)` returns `{ text, attachments? }`.
+* Document requests resolved via `documents` table:
+
+  ```sql
+  SELECT file_url FROM documents WHERE trip_id = X AND type = Y ORDER BY uploaded_at DESC LIMIT 1;
+  ```
+* GPT-4o mini uses a structured prompt with available tools:
+
+  * `get_itinerary()`
+  * `get_flight_status()`
+  * `get_document(type)`
+* Fallback if response > 2 seconds or LLM fails.
+* Memory limited to last 10 conversation turns.
+
+---
+
+### 📂 Database Migrations
+
+#### Conversations
+
+```sql
+CREATE TABLE conversations (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  trip_id uuid REFERENCES trips(id) ON DELETE CASCADE,
+  sender text NOT NULL CHECK (sender IN ('user','bot')),
+  message text NOT NULL,
+  intent text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX ON conversations (trip_id, created_at DESC);
+```
+
+#### Documents
+
+```sql
+CREATE TABLE documents (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  trip_id uuid REFERENCES trips(id) ON DELETE CASCADE,
+  type text NOT NULL CHECK (type IN (
+    'boarding_pass', 'hotel_reservation', 'car_rental', 'transfer', 'insurance', 'tour_reservation'
+  )),
+  file_url text NOT NULL,
+  file_name text,
+  uploaded_at timestamptz DEFAULT now()
+);
+CREATE INDEX ON documents (trip_id);
+```
+
+---
+
+### Roadmap (Post-MVP)
+
+| Phase | Feature                                                                               |
+| ----- | ------------------------------------------------------------------------------------- |
+| F-1   | Handoff to human agent if low confidence (<0.3).                                      |
+| F-2   | Proactive suggestions (e.g. "Your flight is delayed, would you like hotel options?"). |
+| F-3   | Contextual recommendations using embeddings.                                          |
+| F-4   | Upsell flows (insurance, upgrades).                                                   |
+
+---
 

@@ -1,23 +1,24 @@
 # Core Framework
-fastapi>=0.104.0
-uvicorn[standard]>=0.24.0
+fastapi>=0.100.0
+uvicorn[standard]>=0.20.0
 
 # Async HTTP Client
-httpx>=0.25.0
+httpx>=0.24.0
 
 # Database & Validation
-pydantic>=2.5.0
+pydantic>=2.0.0
 python-dotenv>=1.0.0
 
 # Logging
-structlog>=23.2.0
+structlog>=23.0.0
 
 # Scheduling (for NotificationsAgent)
 apscheduler>=3.10.0
 
 # External APIs
-twilio>=8.10.0
+twilio>=8.0.0
 openai>=1.0.0
+python-multipart>=0.0.6
 
 # Date/Time handling
 zoneinfo; python_version < "3.9"

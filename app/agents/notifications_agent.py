@@ -475,4 +475,86 @@ class NotificationsAgent:
     async def close(self):
         """Clean up resources."""
         await self.db_client.close()
-        logger.info("notifications_agent_closed") 
+        logger.info("notifications_agent_closed")
+
+    # TC-003: Free text messaging for ConciergeAgent
+    
+    async def send_free_text(
+        self,
+        whatsapp_number: str,
+        message: str,
+        attachments: Optional[List[str]] = None
+    ) -> DatabaseResult:
+        """
+        Send non-template WhatsApp message for ConciergeAgent responses.
+        
+        Args:
+            whatsapp_number: Phone number (without whatsapp: prefix)
+            message: Free text message to send
+            attachments: Optional list of file URLs to attach
+            
+        Returns:
+            DatabaseResult with send status
+        """
+        try:
+            logger.info("sending_free_text_message",
+                to_number=whatsapp_number,
+                message_length=len(message),
+                has_attachments=bool(attachments)
+            )
+            
+            # Send simple text message via Twilio
+            twilio_message = self.twilio_client.messages.create(
+                messaging_service_sid=self.messaging_service_sid,
+                to=f"whatsapp:{whatsapp_number}",
+                body=message
+            )
+            message_sid = twilio_message.sid
+            
+            # If attachments, send them separately
+            if attachments:
+                for attachment_url in attachments:
+                    try:
+                        attachment_message = self.twilio_client.messages.create(
+                            messaging_service_sid=self.messaging_service_sid,
+                            to=f"whatsapp:{whatsapp_number}",
+                            media_url=[attachment_url]
+                        )
+                        logger.info("attachment_sent",
+                            to_number=whatsapp_number,
+                            attachment_url=attachment_url,
+                            message_sid=attachment_message.sid
+                        )
+                    except Exception as e:
+                        logger.error("attachment_send_failed",
+                            error_code="ATTACHMENT_SEND_ERROR",
+                            to_number=whatsapp_number,
+                            attachment_url=attachment_url,
+                            error=str(e)
+                        )
+            
+            logger.info("free_text_sent_successfully",
+                to_number=whatsapp_number,
+                message_sid=message_sid,
+                attachments_count=len(attachments) if attachments else 0
+            )
+            
+            return DatabaseResult(
+                success=True,
+                data={
+                    "message_sid": message_sid,
+                    "to": whatsapp_number,
+                    "attachments_sent": len(attachments) if attachments else 0
+                }
+            )
+            
+        except Exception as e:
+            logger.error("free_text_send_failed",
+                error_code="FREE_TEXT_SEND_ERROR",
+                to_number=whatsapp_number,
+                error=str(e)
+            )
+            return DatabaseResult(
+                success=False,
+                error=str(e)
+            ) 
