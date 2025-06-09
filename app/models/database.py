@@ -50,6 +50,7 @@ class Trip(BaseModel):
     next_check_at: Optional[datetime] = None
     client_description: Optional[str] = None
     agency_id: Optional[UUID] = None
+    gate: Optional[str] = None  # Flight departure gate (e.g., "A12", "B3")
 
 
 class NotificationLog(BaseModel):

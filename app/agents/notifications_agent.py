@@ -13,6 +13,7 @@ from twilio.base.exceptions import TwilioRestException
 from ..db.supabase_client import SupabaseDBClient
 from ..models.database import Trip, DatabaseResult
 from .notifications_templates import NotificationType, WhatsAppTemplates, get_notification_type_for_status
+from ..services.aeroapi_client import AeroAPIClient, FlightStatus
 
 logger = structlog.get_logger()
 
@@ -30,6 +31,7 @@ class NotificationsAgent:
     def __init__(self):
         """Initialize the NotificationsAgent with required services."""
         self.db_client = SupabaseDBClient()
+        self.aeroapi_client = AeroAPIClient()
         
         # Twilio setup
         account_sid = os.getenv("TWILIO_ACCOUNT_SID")
@@ -46,7 +48,8 @@ class NotificationsAgent:
         self.messaging_service_sid = service_sid
         
         logger.info("notifications_agent_initialized", 
-            twilio_phone=self.twilio_phone
+            twilio_phone=self.twilio_phone,
+            aeroapi_enabled=self.aeroapi_client.api_key is not None
         )
     
     async def run(self, trigger_type: str, **kwargs) -> DatabaseResult:
@@ -233,53 +236,263 @@ class NotificationsAgent:
     
     async def poll_flight_changes(self) -> DatabaseResult:
         """
-        Poll for flight status changes and send updates.
+        Poll for flight status changes using AeroAPI and send updates.
+        
+        Implements smart polling based on departure proximity:
+        - > 48h: No check yet
+        - 30h-12h: Every 6h  
+        - 12h-3h: Every 3h
+        - 3h-1h: Every 30min
+        - 1h-departure: Every 10min
+        - In-flight: Every 30min until landing
         
         Checks for:
-        - Delays
-        - Gate changes  
+        - Status changes (Scheduled -> Delayed, etc.)
+        - Gate changes
+        - Departure time changes (estimated_out)
         - Cancellations
+        - Diversions
         """
-        logger.info("polling_flight_changes")
+        logger.info("polling_flight_changes_with_aeroapi")
         
         now_utc = datetime.now(timezone.utc)
+        current_hour = now_utc.hour
+        
+        # Respect quiet hours (20:00-09:00) - no notifications during this time
+        is_quiet_hours = current_hour < 9 or current_hour >= 20
         
         try:
-            # Get trips that need status polling
+            # Get trips that need status polling (departure > now AND next_check_at <= now)
             trips_to_check = await self.db_client.get_trips_to_poll(now_utc)
+            
+            # Filter for trips that should be checked (departure is in future)
+            active_trips = [
+                trip for trip in trips_to_check 
+                if trip.departure_date > now_utc
+            ]
             
             success_count = 0
             error_count = 0
+            notifications_sent = 0
             
-            for trip in trips_to_check:
-                # TODO: Implement AeroAPI integration to check status
-                # For now, simulate status check
-                logger.info("checking_flight_status", 
-                    trip_id=str(trip.id),
-                    flight_number=trip.flight_number
-                )
+            logger.info("flight_polling_started", 
+                total_trips=len(trips_to_check),
+                active_trips=len(active_trips),
+                is_quiet_hours=is_quiet_hours
+            )
+            
+            for trip in active_trips:
+                try:
+                    # Get current flight status from AeroAPI
+                    departure_date_str = trip.departure_date.strftime("%Y-%m-%d")
+                    current_status = await self.aeroapi_client.get_flight_status(
+                        trip.flight_number, 
+                        departure_date_str
+                    )
+                    
+                    if not current_status:
+                        logger.info("flight_status_not_available", 
+                            trip_id=str(trip.id),
+                            flight_number=trip.flight_number,
+                            departure_date=departure_date_str
+                        )
+                        # Update next check time anyway
+                        next_check = self.calculate_next_check_time(trip.departure_date, now_utc)
+                        await self.db_client.update_next_check_at(trip.id, next_check)
+                        success_count += 1
+                        continue
+                    
+                    # Get previous status from our database (if any)
+                    previous_status = await self._get_previous_flight_status(trip)
+                    
+                    # Detect changes
+                    changes = self.aeroapi_client.detect_flight_changes(current_status, previous_status)
+                    
+                    # Save current status to database
+                    await self._save_flight_status(trip, current_status)
+                    
+                    # Process each change and send notifications
+                    for change in changes:
+                        if not is_quiet_hours:  # Only send notifications during allowed hours
+                            await self._process_flight_change(trip, change, current_status)
+                            notifications_sent += 1
+                        else:
+                            logger.info("notification_deferred_quiet_hours", 
+                                trip_id=str(trip.id),
+                                change_type=change["type"],
+                                current_hour=current_hour
+                            )
+                    
+                    # Update next check time based on poll optimization rules
+                    next_check = self.calculate_next_check_time(trip.departure_date, now_utc)
+                    await self.db_client.update_next_check_at(trip.id, next_check)
+                    
+                    success_count += 1
+                    
+                    logger.info("flight_status_checked", 
+                        trip_id=str(trip.id),
+                        flight_number=trip.flight_number,
+                        status=current_status.status,
+                        changes_detected=len(changes),
+                        next_check=next_check.isoformat()
+                    )
                 
-                # Update next check time based on poll optimization rules
-                next_check = self.calculate_next_check_time(trip.departure_date, now_utc)
-                await self.db_client.update_next_check_at(trip.id, next_check)
-                
-                success_count += 1
+                except Exception as e:
+                    logger.error("flight_status_check_failed", 
+                        trip_id=str(trip.id),
+                        flight_number=trip.flight_number,
+                        error=str(e)
+                    )
+                    error_count += 1
+                    
+                    # Still update next check time for failed checks
+                    try:
+                        next_check = self.calculate_next_check_time(trip.departure_date, now_utc)
+                        await self.db_client.update_next_check_at(trip.id, next_check)
+                    except Exception as update_error:
+                        logger.error("next_check_update_failed", 
+                            trip_id=str(trip.id),
+                            error=str(update_error)
+                        )
             
             logger.info("flight_changes_poll_completed", 
-                checked=len(trips_to_check),
+                total_checked=len(active_trips),
                 success=success_count,
-                errors=error_count
+                errors=error_count,
+                notifications_sent=notifications_sent,
+                quiet_hours=is_quiet_hours
             )
             
             return DatabaseResult(
                 success=True,
-                data={"checked": len(trips_to_check), "updates": 0},
+                data={
+                    "checked": len(active_trips), 
+                    "updates": notifications_sent,
+                    "errors": error_count,
+                    "quiet_hours": is_quiet_hours
+                },
                 affected_rows=success_count
             )
             
         except Exception as e:
             logger.error("flight_changes_poll_failed", error=str(e))
             return DatabaseResult(success=False, error=str(e))
+    
+    async def _get_previous_flight_status(self, trip: Trip) -> Optional[FlightStatus]:
+        """Get the last known flight status from our database"""
+        try:
+            # You could store previous status in a new table or use trip fields
+            # For now, create a basic status from trip data
+            return FlightStatus(
+                ident=trip.flight_number,
+                status=trip.status or "Scheduled",
+                gate_origin=getattr(trip, 'gate', None),  # New field we added
+                estimated_out=trip.departure_date.isoformat() if trip.departure_date else None
+            )
+        except Exception as e:
+            logger.error("previous_status_retrieval_failed", 
+                trip_id=str(trip.id), 
+                error=str(e)
+            )
+            return None
+    
+    async def _save_flight_status(self, trip: Trip, status: FlightStatus):
+        """Save current flight status to database"""
+        try:
+            # Update trip with latest status information
+            update_data = {
+                "status": status.status,
+                "gate": status.gate_origin,  # New field we added in migration
+                # You could add more fields like estimated_out, etc.
+            }
+            
+            # Update the trip in database
+            await self.db_client.update_trip_status(trip.id, update_data)
+            
+            logger.info("flight_status_saved", 
+                trip_id=str(trip.id),
+                status=status.status,
+                gate=status.gate_origin
+            )
+            
+        except Exception as e:
+            logger.error("flight_status_save_failed", 
+                trip_id=str(trip.id),
+                error=str(e)
+            )
+    
+    async def _process_flight_change(
+        self, 
+        trip: Trip, 
+        change: Dict[str, Any], 
+        current_status: FlightStatus
+    ):
+        """Process a detected flight change and send appropriate notification"""
+        try:
+            change_type = change["type"]
+            notification_type = change["notification_type"]
+            
+            # Prepare extra data for template formatting
+            extra_data = {
+                "old_value": change.get("old_value"),
+                "new_value": change.get("new_value"),
+                "change_type": change_type
+            }
+            
+            # Add specific data based on change type
+            if change_type == "gate_change":
+                extra_data["new_gate"] = change["new_value"]
+                extra_data["old_gate"] = change["old_value"]
+            elif change_type == "departure_time_change":
+                extra_data["new_departure_time"] = change["new_value"]
+                extra_data["old_departure_time"] = change["old_value"]
+            elif change_type == "status_change":
+                extra_data["new_status"] = change["new_value"]
+                extra_data["old_status"] = change["old_value"]
+            
+            # Map notification type to our enum
+            notification_enum = self._map_notification_type(notification_type)
+            if not notification_enum:
+                logger.warning("unknown_notification_type", 
+                    notification_type=notification_type,
+                    change_type=change_type
+                )
+                return
+            
+            # Send notification
+            result = await self.send_notification(trip, notification_enum, extra_data)
+            
+            if result.success:
+                logger.info("flight_change_notification_sent", 
+                    trip_id=str(trip.id),
+                    change_type=change_type,
+                    notification_type=notification_type,
+                    message_sid=result.data.get("message_sid") if result.data else None
+                )
+            else:
+                logger.error("flight_change_notification_failed", 
+                    trip_id=str(trip.id),
+                    change_type=change_type,
+                    error=result.error
+                )
+        
+        except Exception as e:
+            logger.error("flight_change_processing_failed", 
+                trip_id=str(trip.id),
+                change_type=change.get("type"),
+                error=str(e)
+            )
+    
+    def _map_notification_type(self, notification_type: str) -> Optional[NotificationType]:
+        """Map string notification type to our enum"""
+        mapping = {
+            "delayed": NotificationType.DELAYED,
+            "cancelled": NotificationType.CANCELLED,
+            "boarding": NotificationType.BOARDING,
+            "gate_change": NotificationType.GATE_CHANGE,
+            # Add more mappings as needed
+        }
+        return mapping.get(notification_type)
     
     async def poll_landed_flights(self) -> DatabaseResult:
         """

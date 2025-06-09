@@ -3,53 +3,44 @@
 ## 🎯 **Current Status** 
 - ✅ **TC-001**: NotificationsAgent (100% Complete)
 - ✅ **TC-002**: ItineraryAgent (100% Complete) 
-- ✅ **TC-003**: ConciergeAgent Phase 1 (80% Complete)
+- ✅ **TC-003**: ConciergeAgent Phase 2 (100% Complete)
+- ✅ **Production Deployment**: LIVE at `https://web-production-92d8d.up.railway.app`
 
 ---
 
-## 🚀 **Next Sprint Priorities**
+## 🚀 **Current Sprint Priorities** (Updated 2025-01-06)
 
-### **HIGH PRIORITY - Current Sprint**
+### **HIGH PRIORITY - In Progress**
 
-#### **TC-003 Phase 2 - Document Management** 📄
-- **Status**: 🔄 In Progress
-- **Estimate**: 2-3 hours
+#### **TC-001 Enhancement - AeroAPI Flight Tracking** ✈️
+- **Status**: 🔄 Next Priority
+- **Estimate**: 3-4 hours
 - **Features**:
-  - API endpoint for document upload
-  - Document retrieval and sharing via WhatsApp
-  - Enhanced intent detection for document requests
-  - Boarding pass, hotel vouchers, insurance docs
+  - Real-time flight status monitoring via AeroAPI
+  - Smart polling optimization (48h→10min intervals based on departure)
+  - Automatic delay/gate/cancellation notifications 
+  - Landing detection + welcome messages
+  - Respect quiet hours (20:00-09:00)
 - **Acceptance Criteria**:
-  - Users can request "boarding pass" and receive PDF
-  - Documents are properly stored with audit trail
-  - ConciergeAgent handles document-related queries
+  - Poll flights based on departure proximity
+  - Detect status, estimated_out, gate_origin changes
+  - Send appropriate WhatsApp notifications
+  - Update trip status and next_check_at in DB
+  - Handle empty responses and API errors gracefully
 
-#### **Production Deployment** 🌐
-- **Status**: ⏳ Pending
+#### **TC-003 UX Improvements - Document Sharing** 📄
+- **Status**: 📋 Planned (Post-AeroAPI)
 - **Estimate**: 1-2 hours
+- **Issue**: Bot says "Tengo tu pase de abordar" but doesn't send actual URL
 - **Features**:
-  - Deploy to Railway/Heroku/Vercel
-  - Configure production Twilio webhooks
-  - Environment variables setup
-  - Monitoring and logging
-- **Acceptance Criteria**:
-  - Public HTTPS endpoint for Twilio webhooks
-  - Production database connected
-  - Real WhatsApp bot operational
+  - Send clickable document links in WhatsApp
+  - Improve document request responses
+  - Add file attachments when possible
+- **Value**: Complete document sharing workflow
 
 ---
 
 ## 🎯 **Medium Priority - Next Sprint**
-
-#### **AeroAPI Integration - Real Flight Tracking** ✈️
-- **Status**: 📋 Planned
-- **Estimate**: 3-4 hours
-- **Features**:
-  - Connect with AeroAPI for live flight data
-  - Automatic polling for flight changes
-  - Real delay/gate/cancellation notifications
-  - Landing detection and welcome messages
-- **Value**: Proactive notifications without manual triggers
 
 #### **Advanced Conversational Features** 🧠
 - **Status**: 📋 Planned  
@@ -60,6 +51,15 @@
   - Local recommendations and tips
   - Multi-turn conversation improvements
 - **Value**: More intelligent and helpful responses
+
+#### **Performance Optimization** ⚡
+- **Status**: 📋 Planned
+- **Estimate**: 2 hours
+- **Features**:
+  - Response time optimization (<2 seconds)
+  - Database query optimization
+  - Caching for document lookups
+- **Value**: Better user experience
 
 ---
 
@@ -125,13 +125,14 @@
 
 ## 📈 **Success Metrics**
 
-### **Current MVP Metrics**
+### **Current Production Metrics**
 - ✅ Response time < 5 seconds
 - ✅ 99% WhatsApp delivery success rate
 - ✅ Context-aware responses
 - ✅ User identification accuracy
+- ✅ Production uptime > 99%
 
-### **Growth Metrics** (Post-Launch)
+### **Growth Metrics** (Target)
 - Monthly active users
 - Conversation completion rates
 - User satisfaction scores
@@ -140,5 +141,5 @@
 
 ---
 
-**Last Updated**: 2024-01-XX  
-**Next Review**: After TC-003 Phase 2 completion 
+**Last Updated**: 2025-01-06  
+**Next Review**: After AeroAPI integration completion 

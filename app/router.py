@@ -13,6 +13,7 @@ from .db.supabase_client import SupabaseDBClient
 from .agents.notifications_agent import NotificationsAgent
 from .agents.itinerary_agent import ItineraryAgent
 from .agents.notifications_templates import NotificationType
+from .main import get_scheduler
 
 logger = structlog.get_logger()
 
@@ -101,39 +102,67 @@ async def create_trip(trip_in: TripCreate):
         # Initialize notifications agent and send confirmation
         notifications_agent = NotificationsAgent()
         
-        notification_result = await notifications_agent.send_single_notification(
-            trip_id=trip_id,
-            notification_type=NotificationType.RESERVATION_CONFIRMATION
-        )
-        
-        if notification_result.success:
-            logger.info("reservation_confirmation_sent", 
-                trip_id=str(trip_id),
-                message_sid=notification_result.data.get("message_sid") if notification_result.data else None
+        try:
+            confirmation_result = await notifications_agent.send_single_notification(
+                trip_id, 
+                NotificationType.RESERVATION_CONFIRMATION
             )
             
-            return JSONResponse(
-                status_code=201,
-                content={
-                    "trip_id": str(trip_id),
-                    "status": "confirmation_sent"
-                }
-            )
-        else:
-            # Trip was created but notification failed
-            logger.warning("reservation_confirmation_failed", 
-                trip_id=str(trip_id),
-                error=notification_result.error
-            )
+            # Schedule immediate notifications if needed (last-minute trips)
+            scheduler = get_scheduler()
+            if scheduler:
+                # Convert trip_data dict to Trip object for scheduler
+                from .models.database import Trip
+                from datetime import datetime
+                
+                trip_obj = Trip(
+                    id=trip_data["id"],
+                    client_name=trip_data["client_name"],
+                    whatsapp=trip_data["whatsapp"],
+                    flight_number=trip_data["flight_number"],
+                    origin_iata=trip_data["origin_iata"],
+                    destination_iata=trip_data["destination_iata"],
+                    departure_date=datetime.fromisoformat(trip_data["departure_date"].replace('Z', '+00:00')),
+                    status=trip_data["status"],
+                    metadata=trip_data.get("metadata"),
+                    inserted_at=datetime.fromisoformat(trip_data["inserted_at"].replace('Z', '+00:00')),
+                    next_check_at=datetime.fromisoformat(trip_data["next_check_at"].replace('Z', '+00:00')) if trip_data.get("next_check_at") else None,
+                    client_description=trip_data.get("client_description"),
+                    agency_id=trip_data.get("agency_id"),
+                    gate=trip_data.get("gate")
+                )
+                
+                await scheduler.schedule_immediate_notifications(trip_obj)
             
-            return JSONResponse(
-                status_code=201,
-                content={
+            # Close notifications agent resources
+            await notifications_agent.close()
+            
+            if confirmation_result.success:
+                return {
                     "trip_id": str(trip_id),
-                    "status": "confirmation_failed",
-                    "error": notification_result.error
+                    "status": "confirmation_sent",
+                    "message": "Trip created and confirmation sent successfully",
+                    "next_check_at": trip_data.get("next_check_at", None).isoformat() if trip_data.get("next_check_at") else None
                 }
+            else:
+                return {
+                    "trip_id": str(trip_id),
+                    "status": "confirmation_failed", 
+                    "message": f"Trip created but confirmation failed: {confirmation_result.error}",
+                    "next_check_at": trip_data.get("next_check_at", None).isoformat() if trip_data.get("next_check_at") else None
+                }
+                
+        except Exception as e:
+            logger.error("trip_notification_error", 
+                trip_id=str(trip_id),
+                error=str(e)
             )
+            return {
+                "trip_id": str(trip_id),
+                "status": "confirmation_failed",
+                "message": f"Trip created but notification system failed: {str(e)}",
+                "next_check_at": trip_data.get("next_check_at", None).isoformat() if trip_data.get("next_check_at") else None
+            }
     
     except ValidationError as e:
         logger.error("trip_validation_failed", 
@@ -424,4 +453,117 @@ async def get_trip_documents(
     
     finally:
         if db_client:
-            await db_client.close() 
+            await db_client.close()
+
+
+@router.post("/test-flight-polling")
+async def test_flight_polling():
+    """Test endpoint for flight polling functionality"""
+    logger.info("test_flight_polling_requested")
+    
+    notifications_agent = None
+    
+    try:
+        notifications_agent = NotificationsAgent()
+        result = await notifications_agent.run("status_change")
+        
+        return {
+            "status": "completed",
+            "success": result.success,
+            "data": result.data,
+            "error": result.error
+        }
+        
+    except Exception as e:
+        logger.error("test_flight_polling_error", error=str(e))
+        return {
+            "status": "error",
+            "success": False,
+            "error": str(e)
+        }
+    
+    finally:
+        if notifications_agent:
+            await notifications_agent.close()
+
+
+@router.get("/scheduler/status")
+async def get_scheduler_status():
+    """Get current scheduler status and job information"""
+    try:
+        scheduler = get_scheduler()
+        if not scheduler:
+            return {
+                "status": "not_initialized",
+                "message": "Scheduler service not available"
+            }
+        
+        status = scheduler.get_job_status()
+        return status
+        
+    except Exception as e:
+        logger.error("scheduler_status_error", error=str(e))
+        return {
+            "status": "error",
+            "message": str(e)
+        }
+
+
+@router.post("/scheduler/test-24h-reminders")
+async def test_24h_reminders():
+    """Test endpoint for 24h reminder functionality"""
+    logger.info("test_24h_reminders_requested")
+    
+    notifications_agent = None
+    
+    try:
+        notifications_agent = NotificationsAgent()
+        result = await notifications_agent.run("24h_reminder")
+        
+        return {
+            "status": "completed",
+            "success": result.success,
+            "data": result.data,
+            "error": result.error
+        }
+        
+    except Exception as e:
+        logger.error("test_24h_reminders_error", error=str(e))
+        return {
+            "status": "error",
+            "success": False,
+            "error": str(e)
+        }
+    
+    finally:
+        if notifications_agent:
+            await notifications_agent.close()
+
+
+@router.post("/scheduler/test-boarding-notifications")
+async def test_boarding_notifications():
+    """Test endpoint for boarding notifications functionality"""
+    logger.info("test_boarding_notifications_requested")
+    
+    try:
+        scheduler = get_scheduler()
+        if not scheduler:
+            return {
+                "status": "error",
+                "message": "Scheduler service not available"
+            }
+        
+        # Manually trigger boarding notifications check
+        await scheduler._process_boarding_notifications()
+        
+        return {
+            "status": "completed",
+            "message": "Boarding notifications check executed"
+        }
+        
+    except Exception as e:
+        logger.error("test_boarding_notifications_error", error=str(e))
+        return {
+            "status": "error",
+            "error": str(e)
+        } 

@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 
 from .api.webhooks import router as webhooks_router
 from .router import router as trips_router
+from .services.scheduler_service import SchedulerService
 
 # Load environment variables
 load_dotenv()
@@ -34,18 +35,35 @@ structlog.configure(
 
 logger = structlog.get_logger()
 
+# Global scheduler instance
+scheduler_service = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application lifespan manager."""
+    """Manage application lifecycle - startup and shutdown"""
+    global scheduler_service
+    
     # Startup
-    logger.info("bauhaus_travel_starting", 
+    logger.info("application_starting")
+    
+    # Initialize and start scheduler
+    scheduler_service = SchedulerService()
+    await scheduler_service.start()
+    
+    logger.info("application_started", 
+        scheduler_status="running",
         environment=os.getenv("ENVIRONMENT", "development")
     )
+    
     yield
+    
     # Shutdown
-    logger.info("bauhaus_travel_stopping")
-
+    logger.info("application_shutting_down")
+    
+    if scheduler_service:
+        await scheduler_service.stop()
+    
+    logger.info("application_shutdown_complete")
 
 # Create FastAPI application
 app = FastAPI(
@@ -73,10 +91,14 @@ app.include_router(trips_router)
 async def root():
     """Root endpoint."""
     return {
-        "message": "Bauhaus Travel API",
-        "version": "1.0.0",
+        "message": "Bauhaus Travel API - AI Travel Assistant",
         "status": "operational",
-        "agents": ["NotificationsAgent", "ItineraryAgent", "ConciergeAgent"]
+        "agents": [
+            "NotificationsAgent - Flight updates and reminders",
+            "ItineraryAgent - AI-powered travel itineraries", 
+            "ConciergeAgent - 24/7 WhatsApp assistant"
+        ],
+        "scheduler": scheduler_service.get_job_status() if scheduler_service else {"status": "not_started"}
     }
 
 
@@ -85,9 +107,14 @@ async def health():
     """Health check endpoint."""
     return {
         "status": "healthy",
-        "service": "bauhaus-travel"
+        "service": "bauhaus-travel",
+        "scheduler": scheduler_service.get_job_status() if scheduler_service else {"status": "not_started"}
     }
 
+# Utility function to access scheduler from other modules
+def get_scheduler() -> SchedulerService:
+    """Get the global scheduler instance"""
+    return scheduler_service
 
 if __name__ == "__main__":
     import uvicorn

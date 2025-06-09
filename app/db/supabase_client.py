@@ -235,11 +235,48 @@ class SupabaseDBClient:
     
     async def update_next_check_at(self, trip_id: UUID, next_check_at: datetime) -> DatabaseResult:
         """
-        Update next_check_at for a specific trip.
+        Update the next_check_at time for a trip.
         
         Args:
             trip_id: UUID of the trip to update
-            next_check_at: Next polling datetime
+            next_check_at: Next check datetime in UTC
+            
+        Returns:
+            DatabaseResult with operation status
+        """
+        try:
+            update_data = {
+                "next_check_at": next_check_at.isoformat()
+            }
+            
+            response = await self._client.patch(
+                f"{self.rest_url}/trips",
+                json=update_data,
+                params={"id": f"eq.{trip_id}"}
+            )
+            response.raise_for_status()
+            
+            logger.info("trip_next_check_updated", 
+                trip_id=str(trip_id),
+                next_check_at=next_check_at.isoformat()
+            )
+            
+            return DatabaseResult(success=True, affected_rows=1)
+            
+        except Exception as e:
+            logger.error("trip_next_check_update_failed", 
+                trip_id=str(trip_id),
+                error=str(e)
+            )
+            return DatabaseResult(success=False, error=str(e))
+    
+    async def update_trip_status(self, trip_id: UUID, update_data: Dict[str, Any]) -> DatabaseResult:
+        """
+        Update trip fields like status, gate, etc.
+        
+        Args:
+            trip_id: UUID of the trip to update
+            update_data: Dict with fields to update (status, gate, etc.)
             
         Returns:
             DatabaseResult with operation status
@@ -247,30 +284,32 @@ class SupabaseDBClient:
         try:
             response = await self._client.patch(
                 f"{self.rest_url}/trips",
-                params={"id": f"eq.{trip_id}"},
-                json={"next_check_at": next_check_at.isoformat()}
+                json=update_data,
+                params={"id": f"eq.{trip_id}"}
             )
             response.raise_for_status()
             
-            logger.info("trip_next_check_updated", 
-                trip_id=str(trip_id), 
-                next_check_at=next_check_at.isoformat()
+            updated_trips = response.json()
+            
+            logger.info("trip_status_updated", 
+                trip_id=str(trip_id),
+                update_data=update_data,
+                affected_rows=len(updated_trips)
             )
             
             return DatabaseResult(
-                success=True,
-                affected_rows=1
+                success=True, 
+                data=updated_trips[0] if updated_trips else None,
+                affected_rows=len(updated_trips)
             )
             
         except Exception as e:
-            logger.error("trip_update_failed", 
-                trip_id=str(trip_id), 
+            logger.error("trip_status_update_failed", 
+                trip_id=str(trip_id),
+                update_data=update_data,
                 error=str(e)
             )
-            return DatabaseResult(
-                success=False,
-                error=str(e)
-            )
+            return DatabaseResult(success=False, error=str(e))
     
     async def log_notification_sent(
         self,
