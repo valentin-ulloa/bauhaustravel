@@ -13,7 +13,6 @@ from .db.supabase_client import SupabaseDBClient
 from .agents.notifications_agent import NotificationsAgent
 from .agents.itinerary_agent import ItineraryAgent
 from .agents.notifications_templates import NotificationType
-from .main import get_scheduler
 
 logger = structlog.get_logger()
 
@@ -109,6 +108,7 @@ async def create_trip(trip_in: TripCreate):
             )
             
             # Schedule immediate notifications if needed (last-minute trips)
+            from .main import get_scheduler
             scheduler = get_scheduler()
             if scheduler:
                 # Convert trip_data dict to Trip object for scheduler
@@ -491,6 +491,7 @@ async def test_flight_polling():
 async def get_scheduler_status():
     """Get current scheduler status and job information"""
     try:
+        from .main import get_scheduler
         scheduler = get_scheduler()
         if not scheduler:
             return {
@@ -546,6 +547,7 @@ async def test_boarding_notifications():
     logger.info("test_boarding_notifications_requested")
     
     try:
+        from .main import get_scheduler
         scheduler = get_scheduler()
         if not scheduler:
             return {
