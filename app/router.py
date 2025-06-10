@@ -107,32 +107,32 @@ async def create_trip(trip_in: TripCreate):
                 NotificationType.RESERVATION_CONFIRMATION
             )
             
-            # Schedule immediate notifications if needed (last-minute trips)
-            from .main import get_scheduler
-            scheduler = get_scheduler()
-            if scheduler:
-                # Convert trip_data dict to Trip object for scheduler
-                from .models.database import Trip
-                from datetime import datetime
-                
-                trip_obj = Trip(
-                    id=trip_data["id"],
-                    client_name=trip_data["client_name"],
-                    whatsapp=trip_data["whatsapp"],
-                    flight_number=trip_data["flight_number"],
-                    origin_iata=trip_data["origin_iata"],
-                    destination_iata=trip_data["destination_iata"],
-                    departure_date=datetime.fromisoformat(trip_data["departure_date"].replace('Z', '+00:00')),
-                    status=trip_data["status"],
-                    metadata=trip_data.get("metadata"),
-                    inserted_at=datetime.fromisoformat(trip_data["inserted_at"].replace('Z', '+00:00')),
-                    next_check_at=datetime.fromisoformat(trip_data["next_check_at"].replace('Z', '+00:00')) if trip_data.get("next_check_at") else None,
-                    client_description=trip_data.get("client_description"),
-                    agency_id=trip_data.get("agency_id"),
-                    gate=trip_data.get("gate")
-                )
-                
-                await scheduler.schedule_immediate_notifications(trip_obj)
+            # TEMPORARY: Disable scheduler to debug the error
+            # from .main import get_scheduler
+            # scheduler = get_scheduler()
+            # if scheduler:
+            #     # Convert trip_data dict to Trip object for scheduler
+            #     from .models.database import Trip
+            #     from datetime import datetime
+            #     
+            #     trip_obj = Trip(
+            #         id=trip_data["id"],
+            #         client_name=trip_data["client_name"],
+            #         whatsapp=trip_data["whatsapp"],
+            #         flight_number=trip_data["flight_number"],
+            #         origin_iata=trip_data["origin_iata"],
+            #         destination_iata=trip_data["destination_iata"],
+            #         departure_date=datetime.fromisoformat(trip_data["departure_date"].replace('Z', '+00:00')),
+            #         status=trip_data["status"],
+            #         metadata=trip_data.get("metadata"),
+            #         inserted_at=datetime.fromisoformat(trip_data["inserted_at"].replace('Z', '+00:00')),
+            #         next_check_at=datetime.fromisoformat(trip_data["next_check_at"].replace('Z', '+00:00')) if trip_data.get("next_check_at") else None,
+            #         client_description=trip_data.get("client_description"),
+            #         agency_id=trip_data.get("agency_id"),
+            #         gate=trip_data.get("gate")
+            #     )
+            #     
+            #     await scheduler.schedule_immediate_notifications(trip_obj)
             
             # Close notifications agent resources
             await notifications_agent.close()
