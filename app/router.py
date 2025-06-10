@@ -6,6 +6,7 @@ from fastapi import APIRouter, HTTPException, BackgroundTasks
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 from typing import Optional, Dict, Any
+from datetime import datetime, timezone
 
 from .models.database import TripCreate, Trip
 from .models.api import DocumentUploadPayload, DocumentUploadResponse
@@ -120,6 +121,12 @@ async def create_trip(trip_in: TripCreate):
                         """Safely parse datetime string with or without timezone"""
                         if not date_str:
                             return None
+                        
+                        # If it's already a datetime object, just ensure it has timezone
+                        if isinstance(date_str, datetime):
+                            if date_str.tzinfo is None:
+                                return date_str.replace(tzinfo=timezone.utc)
+                            return date_str
                         
                         # Handle different datetime formats from database
                         if date_str.endswith('Z'):
@@ -684,6 +691,12 @@ async def debug_trip_scheduling(trip_id: UUID):
             """Safely parse datetime string with or without timezone"""
             if not date_str:
                 return None
+            
+            # If it's already a datetime object, just ensure it has timezone
+            if isinstance(date_str, datetime):
+                if date_str.tzinfo is None:
+                    return date_str.replace(tzinfo=timezone.utc)
+                return date_str
             
             # Handle different datetime formats from database
             if date_str.endswith('Z'):
