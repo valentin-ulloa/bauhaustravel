@@ -592,3 +592,56 @@ async def test_boarding_notifications():
             "status": "error",
             "error": str(e)
         } 
+
+
+@router.post("/scheduler/test-itinerary-generation")
+async def test_itinerary_generation():
+    """Test automatic itinerary generation scheduling"""
+    try:
+        from .main import get_scheduler
+        from .models.database import Trip
+        from datetime import datetime, timezone, timedelta
+        from uuid import uuid4
+        
+        scheduler = get_scheduler()
+        
+        if not scheduler or not scheduler.is_running:
+            return {
+                "status": "error",
+                "message": "Scheduler not running"
+            }
+        
+        # Create a test trip object for tomorrow
+        test_trip = Trip(
+            id=uuid4(),
+            client_name="Test User",
+            whatsapp="+1234567890",
+            flight_number="TEST123",
+            origin_iata="LAX",
+            destination_iata="NYC", 
+            departure_date=datetime.now(timezone.utc) + timedelta(hours=25),  # Tomorrow
+            status="confirmed",
+            client_description="Test trip for itinerary generation"
+        )
+        
+        # Test the scheduler method directly
+        await scheduler.schedule_immediate_notifications(test_trip)
+        
+        # Check if jobs were scheduled
+        jobs = scheduler.get_job_status()
+        itinerary_jobs = [job for job in jobs.get("jobs", []) if "itinerary" in job.get("id", "")]
+        
+        return {
+            "status": "completed",
+            "message": "Itinerary scheduling test completed",
+            "trip_id": str(test_trip.id),
+            "scheduled_jobs": itinerary_jobs,
+            "total_jobs": jobs.get("jobs_count", 0)
+        }
+        
+    except Exception as e:
+        logger.error("test_itinerary_generation_failed", error=str(e))
+        return {
+            "status": "error", 
+            "message": f"Test failed: {str(e)}"
+        }
