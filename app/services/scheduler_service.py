@@ -127,7 +127,7 @@ class SchedulerService:
                 self.scheduler.add_job(
                     self._send_immediate_reminder,
                     DateTrigger(run_date=now_utc + timedelta(minutes=1)),  # 1 minute delay
-                    args=[trip.id],
+                    args=[str(trip.id)],  # Convert UUID to string
                     id=job_id,
                     replace_existing=True
                 )
@@ -144,7 +144,7 @@ class SchedulerService:
                 self.scheduler.add_job(
                     self._send_boarding_notification,
                     DateTrigger(run_date=boarding_time),
-                    args=[trip.id],
+                    args=[str(trip.id)],  # Convert UUID to string
                     id=job_id,
                     replace_existing=True
                 )
