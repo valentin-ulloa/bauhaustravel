@@ -612,6 +612,7 @@ async def test_itinerary_generation():
             }
         
         # Create a test trip object for tomorrow
+        now_utc = datetime.now(timezone.utc)
         test_trip = Trip(
             id=uuid4(),
             client_name="Test User",
@@ -619,8 +620,9 @@ async def test_itinerary_generation():
             flight_number="TEST123",
             origin_iata="LAX",
             destination_iata="NYC", 
-            departure_date=datetime.now(timezone.utc) + timedelta(hours=25),  # Tomorrow
+            departure_date=now_utc + timedelta(hours=25),  # Tomorrow
             status="confirmed",
+            inserted_at=now_utc,
             client_description="Test trip for itinerary generation"
         )
         
