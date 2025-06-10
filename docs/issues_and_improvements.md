@@ -40,6 +40,29 @@ curl -X POST https://web-production-92d8d.up.railway.app/trips \
 # Response: {"trip_id":"xxx","status":"confirmation_sent"} ✅
 ```
 
+### ✅ Bug #2: Automatic Itinerary Generation Not Working - FIXED
+**Error:** ~~Itinerary jobs not being scheduled, messages not arriving~~
+
+**Status:** ✅ **COMPLETELY FIXED** (2025-01-06)  
+**Root Cause:** `safe_datetime_parse()` function failing with datetime objects vs strings  
+**Solution:** Added proper datetime object handling in scheduler integration  
+**Deployment:** Live in Railway production  
+**Verification:** ✅ **User confirmed: "me llegaron los mensajes!"**  
+
+**Evidence of Success:**
+- Trip `04995606-6298-4c35-bb30-03b7a4e902de` - Automatic flow working
+- Trip `ff59bdc1-b79a-4fff-aed2-4775b0c80b6c` - End-to-end success
+- Scheduler jobs executing correctly with intelligent timing
+
+**Technical Fix:**
+```python
+# Added datetime object handling
+if isinstance(date_str, datetime):
+    if date_str.tzinfo is None:
+        return date_str.replace(tzinfo=timezone.utc)
+    return date_str
+```
+
 ---
 
 ## 🐛 **UX Issues - Document Handling** (HIGH PRIORITY)
