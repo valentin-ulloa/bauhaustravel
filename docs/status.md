@@ -257,3 +257,71 @@ curl -X POST https://web-production-92d8d.up.railway.app/scheduler/test-boarding
 6. ❌ Validate 24h reminders and boarding notifications
 
 ---
+
+## TC-002 Enhancement: Intelligent Automatic Itinerary Generation ✅ → ✅ **COMPLETED - PRODUCTION READY**
+
+**Status:** ✅ **100% Complete - Automatic Scheduling Implemented**  
+**Last Updated:** 2025-01-06  
+
+### ✅ **Automatic Itinerary System Completed:**
+- ✅ **Smart Timing Logic** → Intelligent delays based on departure proximity
+- ✅ **SchedulerService Integration** → Seamless job scheduling for itinerary generation
+- ✅ **Premium UX Flow** → Confirmation immediate, itinerary follows automatically
+- ✅ **Robust Error Handling** → Scheduler failures don't block trip creation
+- ✅ **Agent Architecture Respected** → Uses existing ItineraryAgent.run() method
+- ✅ **Manual Endpoint Maintained** → POST /itinerary still available for on-demand
+
+### 📊 **Intelligent Timing Strategy:**
+```
+AUTOMATIC ITINERARY GENERATION:
+> 30 days until departure → 2 hours after confirmation
+7-30 days until departure → 1 hour after confirmation  
+< 7 days until departure  → 30 minutes after confirmation
+< 24h until departure     → 5 minutes after confirmation (immediate)
+```
+
+### 🏗️ **Architecture Compliance:**
+- ✅ **SchedulerService** → Orchestrator, not an agent
+- ✅ **ItineraryAgent** → Autonomous agent called by scheduler
+- ✅ **NotificationsAgent** → Autonomous agent for WhatsApp delivery
+- ✅ **No agent-to-agent calls** → Only scheduler calls agents
+- ✅ **Separation of concerns** → Each component has clear responsibilities
+
+### 🚀 **User Experience Flow:**
+1. **User creates trip** → Immediate WhatsApp confirmation via NotificationsAgent
+2. **System intelligently schedules** → SchedulerService calculates optimal timing
+3. **ItineraryAgent executes** → Generates personalized itinerary automatically
+4. **WhatsApp notification sent** → "¡Tu itinerario está listo!" via template
+5. **Premium feeling** → Everything automatic, no user intervention required
+
+### 🔧 **Technical Implementation:**
+- **Integration Point**: POST /trips automatically calls scheduler.schedule_immediate_notifications()
+- **Timing Calculation**: Uses total_seconds() / 3600 for hour-based precision
+- **Job Scheduling**: APScheduler DateTrigger with unique job IDs per trip
+- **Agent Execution**: scheduler._generate_itinerary() → ItineraryAgent.run()
+- **Error Isolation**: Try/catch prevents scheduler issues from affecting trip creation
+- **Logging**: Comprehensive logging with timing category and hours to departure
+
+### ✅ **Files Enhanced:**
+- ✅ `app/services/scheduler_service.py` (ENHANCED - intelligent timing + itinerary scheduling)
+- ✅ `app/router.py` (ENHANCED - automatic scheduling integration)
+- ✅ `docs/roadmap.md` (UPDATED - TC-002 completed)
+- ✅ `tasks/tasks.md` (UPDATED - automatic generation documented)
+
+### 🧪 **Production Testing:**
+```bash
+# Create trip and monitor automatic itinerary generation
+curl -X POST https://web-production-92d8d.up.railway.app/trips \
+  -H "Content-Type: application/json" \
+  -d '{"client_name": "Test", "departure_date": "2025-06-10T13:40:00", ...}'
+
+# Monitor scheduler jobs
+curl https://web-production-92d8d.up.railway.app/scheduler/status
+```
+
+### 📝 **Timing Logic Fixed (2025-01-06):**
+- ✅ **Bug Fixed**: Now uses total_hours instead of days for accurate < 24h detection
+- ✅ **Precision**: Calculates time_to_departure.total_seconds() / 3600 for hour precision
+- ✅ **Logging Enhanced**: Shows hours_to_departure and timing_category for debugging
+
+---

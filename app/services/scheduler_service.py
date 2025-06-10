@@ -179,14 +179,16 @@ class SchedulerService:
             time_to_departure: Time remaining until departure
         """
         try:
-            # Determine delay based on time to departure
-            if time_to_departure.days > 30:
+            # Determine delay based on time to departure (using total hours for accuracy)
+            total_hours = time_to_departure.total_seconds() / 3600
+            
+            if total_hours > 30 * 24:  # > 30 days
                 delay_minutes = 120  # 2 hours
-            elif time_to_departure.days >= 7:
+            elif total_hours >= 7 * 24:  # 7-30 days
                 delay_minutes = 60   # 1 hour
-            elif time_to_departure.days >= 1:
+            elif total_hours >= 24:  # 1-7 days
                 delay_minutes = 30   # 30 minutes
-            else:
+            else:  # < 24 hours
                 delay_minutes = 5    # 5 minutes for last-minute trips
             
             # Schedule itinerary generation
@@ -205,7 +207,8 @@ class SchedulerService:
                 trip_id=str(trip.id),
                 delay_minutes=delay_minutes,
                 generation_time=itinerary_time.isoformat(),
-                days_to_departure=time_to_departure.days
+                hours_to_departure=round(total_hours, 2),
+                timing_category=f"{'< 24h' if total_hours < 24 else f'{int(total_hours/24)} days'}"
             )
                 
         except Exception as e:
