@@ -10,23 +10,25 @@
 
 ## 🚀 **Current Sprint Priorities** (Updated 2025-01-06)
 
-### **HIGH PRIORITY - In Progress**
+### **HIGH PRIORITY - Completed**
+
+#### **TC-002 Enhancement - Intelligent Automatic Itinerary Generation** ✨
+- **Status**: ✅ **COMPLETED** - Automatic scheduling implemented
+- **Features**:
+  - Smart timing based on departure date (5 min to 2 hours delay)
+  - Automatic itinerary generation via SchedulerService
+  - Integration with existing ItineraryAgent
+  - WhatsApp notification when ready via `itinerary` template
+  - Maintains manual endpoint `/itinerary` for on-demand generation
+- **Timing Strategy**:
+  - `> 30 days`: 2 hours after confirmation
+  - `7-30 days`: 1 hour after confirmation  
+  - `< 7 days`: 30 minutes after confirmation
+  - `< 24h`: 5 minutes after confirmation (immediate)
+- **Value**: Premium user experience with automatic personalized itineraries
 
 #### **TC-001 Enhancement - AeroAPI Flight Tracking** ✈️
-- **Status**: 🔄 Next Priority
-- **Estimate**: 3-4 hours
-- **Features**:
-  - Real-time flight status monitoring via AeroAPI
-  - Smart polling optimization (48h→10min intervals based on departure)
-  - Automatic delay/gate/cancellation notifications 
-  - Landing detection + welcome messages
-  - Respect quiet hours (20:00-09:00)
-- **Acceptance Criteria**:
-  - Poll flights based on departure proximity
-  - Detect status, estimated_out, gate_origin changes
-  - Send appropriate WhatsApp notifications
-  - Update trip status and next_check_at in DB
-  - Handle empty responses and API errors gracefully
+- **Status**: ✅ **COMPLETED** - Production ready
 
 #### **TC-003 UX Improvements - Document Sharing** 📄
 - **Status**: 📋 Planned (Post-AeroAPI)

@@ -153,9 +153,63 @@ class SchedulerService:
                     trip_id=str(trip.id),
                     boarding_time=boarding_time.isoformat()
                 )
+            
+            # Schedule intelligent itinerary generation
+            await self.schedule_itinerary_generation(trip, now_utc, time_to_departure)
                 
         except Exception as e:
             logger.error("immediate_scheduling_failed", 
+                trip_id=str(trip.id), 
+                error=str(e)
+            )
+    
+    async def schedule_itinerary_generation(self, trip: Trip, now_utc: datetime, time_to_departure: timedelta):
+        """
+        Schedule intelligent itinerary generation based on time until departure.
+        
+        Timing strategy:
+        - > 30 days: 2 hours after confirmation
+        - 7-30 days: 1 hour after confirmation  
+        - < 7 days: 30 minutes after confirmation
+        - < 24h: Immediately (5 minutes after confirmation)
+        
+        Args:
+            trip: Trip object
+            now_utc: Current UTC time
+            time_to_departure: Time remaining until departure
+        """
+        try:
+            # Determine delay based on time to departure
+            if time_to_departure.days > 30:
+                delay_minutes = 120  # 2 hours
+            elif time_to_departure.days >= 7:
+                delay_minutes = 60   # 1 hour
+            elif time_to_departure.days >= 1:
+                delay_minutes = 30   # 30 minutes
+            else:
+                delay_minutes = 5    # 5 minutes for last-minute trips
+            
+            # Schedule itinerary generation
+            itinerary_time = now_utc + timedelta(minutes=delay_minutes)
+            job_id = f"itinerary_{trip.id}"
+            
+            self.scheduler.add_job(
+                self._generate_itinerary,
+                DateTrigger(run_date=itinerary_time),
+                args=[str(trip.id)],
+                id=job_id,
+                replace_existing=True
+            )
+            
+            logger.info("itinerary_generation_scheduled",
+                trip_id=str(trip.id),
+                delay_minutes=delay_minutes,
+                generation_time=itinerary_time.isoformat(),
+                days_to_departure=time_to_departure.days
+            )
+                
+        except Exception as e:
+            logger.error("itinerary_scheduling_failed", 
                 trip_id=str(trip.id), 
                 error=str(e)
             )
@@ -286,6 +340,40 @@ class SchedulerService:
                 
         except Exception as e:
             logger.error("boarding_notification_exception", 
+                trip_id=trip_id, 
+                error=str(e)
+            )
+    
+    async def _generate_itinerary(self, trip_id: str):
+        """Generate itinerary for scheduled trip"""
+        try:
+            # Import ItineraryAgent here to avoid circular imports
+            from ..agents.itinerary_agent import ItineraryAgent
+            
+            logger.info("scheduled_itinerary_generation_started", trip_id=trip_id)
+            
+            # Initialize itinerary agent
+            itinerary_agent = ItineraryAgent()
+            
+            # Generate itinerary
+            result = await itinerary_agent.run(trip_id)
+            
+            if result.success:
+                logger.info("scheduled_itinerary_generated_successfully", 
+                    trip_id=trip_id,
+                    itinerary_id=result.data.get("itinerary_id")
+                )
+            else:
+                logger.error("scheduled_itinerary_generation_failed", 
+                    trip_id=trip_id,
+                    error=result.error
+                )
+            
+            # Close resources
+            await itinerary_agent.close()
+                
+        except Exception as e:
+            logger.error("scheduled_itinerary_generation_exception", 
                 trip_id=trip_id, 
                 error=str(e)
             )

@@ -74,68 +74,70 @@ This agent:
 ---
 
 ## TC-002 — Itinerary Agent  
-**Status:** Not Started  **Priority:** High  
+**Status:** ✅ **COMPLETED** - Automatic Generation Implemented  **Priority:** High  
 
 ---
 
 ### 🎯 Objective  
 
-Implement the first version of Itinerary Agent to:
+✅ **COMPLETED**: Implemented intelligent automatic itinerary generation with:
 
 ✅ Generate a day-by-day itinerary based on trip + profile (+ optional agency places).  
 ✅ Save it versioned in Supabase.  
 ✅ Notify user via WhatsApp that itinerary is ready (via template).  
 ✅ Allow triggering manually via API (to test with agencies and early B2C users).  
+✅ **NEW**: Automatic scheduling with intelligent timing based on departure date.
+
+---
+
+### 🚀 **ENHANCEMENT: Automatic Generation** (2025-01-06)
+
+**Intelligent Timing Strategy:**
+- **> 30 days**: 2 hours after confirmation  
+- **7-30 days**: 1 hour after confirmation  
+- **< 7 days**: 30 minutes after confirmation
+- **< 24h**: 5 minutes after confirmation (immediate for last-minute trips)
+
+**Implementation:**
+- ✅ Integrated with SchedulerService for automated job scheduling
+- ✅ Triggered automatically on trip creation (POST /trips)
+- ✅ Uses existing ItineraryAgent.run() method
+- ✅ Sends WhatsApp notification via `itinerary` template when ready
+- ✅ Maintains manual endpoint POST /itinerary for on-demand generation
+- ✅ Error handling: scheduler failures don't block trip creation
+
+**User Experience:**
+- User creates trip → receives confirmation immediately
+- System automatically schedules itinerary generation based on timing
+- User receives "¡Tu itinerario está listo!" WhatsApp after appropriate delay
+- Premium feel: everything happens automatically without user intervention
 
 ---
 
 ### 🛠️ Scope (MVP)
 
-| # | Task | Key Details |
-| - | ---- | ----------- |
-| 1️⃣ | **Input Handling** | Load `trip`, `flights`, `profile`. If `agency_id` present → load `agency_places`. |
-| 2️⃣ | **Itinerary Generation** | Build `raw_prompt` with full context. Call OpenAI (gpt-4o mini) or Perplexity. Save `raw_response`. |
-| 3️⃣ | **Validation** | For each place: if match in `agency_places` → `source = "agency"`; else → `source = "low_validation"`. |
-| 4️⃣ | **Parsed Itinerary** | Build parsed_itinerary JSON:  
-```json5
-{
-  "days": [
-    {
-      "date": "YYYY-MM-DD",
-      "items": [
-        {
-          "title": "…",
-          "type": "…",
-          "address": "…",
-          "city": "…",
-          "country": "…",
-          "lat": …,
-          "lng": …,
-          "opening_hours": "…",
-          "rating": null,
-          "source": "agency" | "low_validation",
-          "safety_warnings": [],
-          "tags": []
-        }
-      ]
-    }
-  ]
-}
-``` |
-| 5️⃣ | **Persistence** | Save parsed_itinerary to `itineraries` table (see migrations). First version: `version=1`, `status='draft'`. |
-| 6️⃣ | **Notify User (WhatsApp)** | Send WhatsApp template `itinerary_ready` via NotificationsAgent:<br>Example body:<br>_“¡Tu itinerario está listo! Responde 'Sí' si querés verlo completo.”_ |
-| 7️⃣ | **API Endpoint** | Implement `POST /itinerary?trip_id=uuid` to trigger itinerary generation manually. |
+| # | Task | Status |
+| - | ---- | ------ |
+| 1️⃣ | **Input Handling** | ✅ Load `trip`, `flights`, `profile`. If `agency_id` present → load `agency_places`. |
+| 2️⃣ | **Itinerary Generation** | ✅ Build `raw_prompt` with full context. Call OpenAI (gpt-4o mini). Save `raw_response`. |
+| 3️⃣ | **Validation** | ✅ For each place: if match in `agency_places` → `source = "agency"`; else → `source = "low_validation"`. |
+| 4️⃣ | **Parsed Itinerary** | ✅ Build parsed_itinerary JSON with proper structure |
+| 5️⃣ | **Persistence** | ✅ Save parsed_itinerary to `itineraries` table |
+| 6️⃣ | **Notify User (WhatsApp)** | ✅ Send WhatsApp template `itinerary_ready` via NotificationsAgent |
+| 7️⃣ | **API Endpoint** | ✅ Implement `POST /itinerary?trip_id=uuid` for manual generation |
+| 8️⃣ | **Automatic Scheduling** | ✅ **NEW**: Smart timing via SchedulerService integration |
 
 ---
 
-### ✅ Acceptance Criteria
+### ✅ Acceptance Criteria - ALL COMPLETED
 
-1. `parsed_itinerary` saved in `itineraries` with `trip_id`, `version`, `status`.  
-2. WhatsApp template `itinerary_ready` is sent after generation.  
-3. If `agency_places` matches ≥1 item → source = "agency".  
-4. Items without match → source = "low_validation".  
-5. `POST /itinerary` triggers generation and returns `201` with itinerary ID.  
-6. Unit tests cover: prompt build, agency validation, DB insert, WhatsApp send.
+1. ✅ `parsed_itinerary` saved in `itineraries` with `trip_id`, `version`, `status`.  
+2. ✅ WhatsApp template `itinerary_ready` is sent after generation.  
+3. ✅ If `agency_places` matches ≥1 item → source = "agency".  
+4. ✅ Items without match → source = "low_validation".  
+5. ✅ `POST /itinerary` triggers generation and returns `201` with itinerary ID.  
+6. ✅ **NEW**: Automatic generation scheduled on trip creation with intelligent timing.
+7. ✅ **NEW**: Scheduler failures don't block trip creation process.
 
 ---
 

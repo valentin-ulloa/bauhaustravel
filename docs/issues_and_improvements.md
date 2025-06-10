@@ -174,6 +174,42 @@ In-flight            → Every 30 minutes
 - `scripts/test_aeroapi.py` (NEW)
 - `app/router.py` (ADDED test endpoint)
 
+### ✅ Enhancement #2: Intelligent Automatic Itinerary Generation - COMPLETED (2025-01-06)
+
+**What was implemented:**
+- ✅ **Smart Timing System** → Automatic itinerary generation with intelligent delays
+- ✅ **SchedulerService Integration** → Seamless job scheduling for itinerary generation
+- ✅ **Premium UX Flow** → User receives confirmation immediately, itinerary automatically follows
+- ✅ **Robust Error Handling** → Scheduler failures don't block trip creation
+- ✅ **Maintains Manual Control** → POST /itinerary endpoint still available for on-demand generation
+
+**Intelligent Timing Strategy:**
+```
+> 30 days until departure  → 2 hours after confirmation
+7-30 days until departure → 1 hour after confirmation  
+< 7 days until departure  → 30 minutes after confirmation
+< 24h until departure     → 5 minutes after confirmation (immediate)
+```
+
+**Technical Implementation:**
+- **Integration Point**: POST /trips automatically schedules itinerary generation
+- **Scheduler Method**: `schedule_itinerary_generation()` with smart timing logic
+- **Execution Method**: `_generate_itinerary()` using existing ItineraryAgent.run()
+- **Error Isolation**: Try/catch prevents scheduler issues from affecting trip creation
+- **UUID Handling**: Proper string conversion for APScheduler compatibility
+
+**User Experience Enhancement:**
+1. User creates trip → immediate WhatsApp confirmation
+2. System intelligently schedules itinerary based on departure date
+3. User receives "¡Tu itinerario está listo!" at optimal timing
+4. Premium feeling: everything automatic, no user intervention needed
+
+**Files Modified:**
+- `app/services/scheduler_service.py` (ENHANCED - added itinerary scheduling)
+- `app/router.py` (ENHANCED - integrated automatic scheduling on trip creation)
+- `docs/roadmap.md` (UPDATED - marked TC-002 as completed with enhancement)
+- `tasks/tasks.md` (UPDATED - documented automatic generation implementation)
+
 ---
 
 ## 🚨 **PRODUCTION BUGS** (CRITICAL PRIORITY) 
