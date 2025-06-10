@@ -152,9 +152,10 @@ async def create_trip(trip_in: TripCreate):
                     await scheduler.schedule_immediate_notifications(trip_obj)
             except Exception as scheduler_error:
                 # Log scheduler error but don't fail the trip creation
-                logger.warning("scheduler_integration_failed", 
+                logger.error("scheduler_integration_failed", 
                     trip_id=str(trip_id),
-                    scheduler_error=str(scheduler_error)
+                    scheduler_error=str(scheduler_error),
+                    error_type=type(scheduler_error).__name__
                 )
             
             # Close notifications agent resources
@@ -646,4 +647,100 @@ async def test_itinerary_generation():
         return {
             "status": "error", 
             "message": f"Test failed: {str(e)}"
+        }
+
+
+@router.post("/scheduler/debug-trip-scheduling/{trip_id}")
+async def debug_trip_scheduling(trip_id: UUID):
+    """Debug scheduler integration for a specific trip"""
+    try:
+        from .main import get_scheduler
+        from .models.database import Trip
+        
+        # Get the trip from database
+        db_client = SupabaseDBClient()
+        trip_result = await db_client.get_trip_by_id(trip_id)
+        
+        if not trip_result.success or not trip_result.data:
+            return {
+                "status": "error",
+                "message": "Trip not found"
+            }
+        
+        trip_data = trip_result.data
+        
+        # Get scheduler
+        scheduler = get_scheduler()
+        if not scheduler or not scheduler.is_running:
+            return {
+                "status": "error",
+                "message": "Scheduler not running"
+            }
+        
+        # Convert to Trip object exactly like in create_trip
+        from datetime import datetime, timezone
+        
+        def safe_datetime_parse(date_str):
+            """Safely parse datetime string with or without timezone"""
+            if not date_str:
+                return None
+            
+            # Handle different datetime formats from database
+            if date_str.endswith('Z'):
+                # UTC format: "2025-06-20T15:00:00Z"
+                return datetime.fromisoformat(date_str.replace('Z', '+00:00'))
+            elif '+' in date_str or '-' in date_str.split('T')[1]:
+                # Timezone format: "2025-06-20T15:00:00-03:00"
+                return datetime.fromisoformat(date_str)
+            else:
+                # No timezone: "2025-06-20T15:00:00" - assume UTC
+                return datetime.fromisoformat(date_str).replace(tzinfo=timezone.utc)
+        
+        trip_obj = Trip(
+            id=trip_data["id"],
+            client_name=trip_data["client_name"],
+            whatsapp=trip_data["whatsapp"],
+            flight_number=trip_data["flight_number"],
+            origin_iata=trip_data["origin_iata"],
+            destination_iata=trip_data["destination_iata"],
+            departure_date=safe_datetime_parse(trip_data["departure_date"]),
+            status=trip_data["status"],
+            metadata=trip_data.get("metadata"),
+            inserted_at=safe_datetime_parse(trip_data["inserted_at"]),
+            next_check_at=safe_datetime_parse(trip_data.get("next_check_at")),
+            client_description=trip_data.get("client_description"),
+            agency_id=trip_data.get("agency_id"),
+            gate=trip_data.get("gate")
+        )
+        
+        # Try to schedule and catch any errors
+        await scheduler.schedule_immediate_notifications(trip_obj)
+        
+        # Check scheduled jobs
+        jobs = scheduler.get_job_status()
+        itinerary_jobs = [job for job in jobs.get("jobs", []) if "itinerary" in job.get("id", "")]
+        
+        return {
+            "status": "completed",
+            "message": "Debug test completed successfully",
+            "trip_id": str(trip_id),
+            "trip_data": {
+                "departure_date": str(trip_obj.departure_date),
+                "client_name": trip_obj.client_name,
+                "status": trip_obj.status
+            },
+            "scheduled_jobs": itinerary_jobs,
+            "total_jobs": jobs.get("jobs_count", 0)
+        }
+        
+    except Exception as e:
+        logger.error("debug_trip_scheduling_failed", 
+            trip_id=str(trip_id),
+            error=str(e),
+            error_type=type(e).__name__
+        )
+        return {
+            "status": "error", 
+            "message": f"Debug failed: {str(e)}",
+            "error_type": type(e).__name__
         }
