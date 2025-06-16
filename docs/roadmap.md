@@ -261,3 +261,11 @@ await self.db_client.get_complete_trip_context(trip_id)  # All data in 1 call
 
 **Last Updated**: 2025-01-06  
 **Next Review**: After AeroAPI integration completion 
+
+- Database/context optimization: Se implementa primero en ConciergeAgent (mayor impacto), luego se replica en ItineraryAgent y NotificationsAgent siguiendo el patrón documentado. 
+
+class TripContext(BaseModel):
+    trip: dict
+    itinerary: Optional[dict]
+    documents: List[dict]
+    recent_messages: List[dict] 

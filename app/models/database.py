@@ -2,7 +2,7 @@
 
 import re
 from datetime import datetime
-from typing import Optional, Literal
+from typing import Optional, Literal, List
 from uuid import UUID
 from pydantic import BaseModel, Field, validator
 
@@ -109,4 +109,11 @@ class DatabaseResult(BaseModel):
     success: bool
     data: Optional[dict] = None
     error: Optional[str] = None
-    affected_rows: int = 0 
+    affected_rows: int = 0
+
+
+class TripContext(BaseModel):
+    trip: dict
+    itinerary: Optional[dict]
+    documents: List[dict]
+    recent_messages: List[dict] 

@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 
 from .api.webhooks import router as webhooks_router
 from .router import router as trips_router
+from .api.conversations import router as conversations_router
 from .services.scheduler_service import SchedulerService
 
 # Load environment variables
@@ -85,6 +86,7 @@ app.add_middleware(
 # Include routers
 app.include_router(webhooks_router)
 app.include_router(trips_router)
+app.include_router(conversations_router, prefix="/conversations", tags=["conversations"])
 
 
 @app.get("/")

@@ -93,6 +93,11 @@ async def trip_confirmation_webhook(
         raise HTTPException(status_code=500, detail="Webhook processing failed")
 
 
+def normalize_phone(phone: str) -> str:
+    """Normalize phone number by removing whatsapp: prefix if present."""
+    return phone.replace("whatsapp:", "") if phone.startswith("whatsapp:") else phone
+
+
 @router.post("/twilio")
 async def twilio_whatsapp_webhook(
     background_tasks: BackgroundTasks,
@@ -108,8 +113,13 @@ async def twilio_whatsapp_webhook(
     Webhook to receive incoming WhatsApp messages from Twilio.
     Processes user messages via ConciergeAgent.
     """
-    # Extract phone number (remove "whatsapp:" prefix)
-    whatsapp_number = From.replace("whatsapp:", "")
+    # Extract and normalize phone number
+    whatsapp_number = normalize_phone(From)
+    
+    logger.info("normalized_phone", 
+        raw=From,
+        normalized=whatsapp_number
+    )
     
     logger.info("twilio_inbound_message_received",
         message_sid=MessageSid,
@@ -161,6 +171,13 @@ async def process_inbound_message(
     concierge_agent = None
     
     try:
+        logger.info("BACKGROUND_TASK_STARTED",
+            from_number=whatsapp_number,
+            message_sid=message_sid,
+            message_body=message_body[:50] + "..." if len(message_body) > 50 else message_body,
+            has_media=media_url is not None
+        )
+        
         logger.info("processing_inbound_message",
             from_number=whatsapp_number,
             message_sid=message_sid,
@@ -168,16 +185,27 @@ async def process_inbound_message(
         )
         
         # Initialize ConciergeAgent
-        concierge_agent = ConciergeAgent()
+        logger.info("INITIALIZING_CONCIERGE_AGENT")
+        try:
+            concierge_agent = ConciergeAgent()
+            logger.info("CONCIERGE_AGENT_INITIALIZED")
+        except Exception as init_error:
+            logger.error("CONCIERGE_AGENT_INIT_FAILED", error=str(init_error), error_type=type(init_error).__name__)
+            raise init_error
         
         # Process the message
-        result = await concierge_agent.handle_inbound_message(
-            whatsapp_number=whatsapp_number,
-            message_body=message_body,
-            media_url=media_url,
-            media_type=media_type,
-            message_sid=message_sid
-        )
+        logger.info("CALLING_HANDLE_INBOUND_MESSAGE")
+        try:
+            result = await concierge_agent.handle_inbound_message(
+                whatsapp_number=whatsapp_number,
+                message_body=message_body,
+                media_url=media_url,
+                media_type=media_type,
+                message_sid=message_sid
+            )
+        except Exception as handle_error:
+            logger.error("HANDLE_INBOUND_MESSAGE_FAILED", error=str(handle_error), error_type=type(handle_error).__name__)
+            raise handle_error
         
         if result.success:
             logger.info("inbound_message_processed",

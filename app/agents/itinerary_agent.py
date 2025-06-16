@@ -12,6 +12,8 @@ from ..db.supabase_client import SupabaseDBClient
 from ..models.database import Trip, DatabaseResult, AgencyPlace
 from .notifications_agent import NotificationsAgent
 from .notifications_templates import NotificationType
+# TC-004: Import retry logic
+from ..utils.retry_logic import retry_async, RetryConfigs
 
 logger = structlog.get_logger()
 
@@ -246,14 +248,11 @@ Make it personal and exciting for {trip.client_name}!"""
             Raw response from OpenAI
         """
         try:
-            response = self.openai_client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[
-                    {"role": "system", "content": "You are a professional travel planner. Always respond with valid JSON."},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.7,
-                max_tokens=2000
+            # TC-004: Use retry logic for robust OpenAI calls
+            response = await retry_async(
+                lambda: self._make_openai_request(prompt),
+                config=RetryConfigs.OPENAI_API,
+                context="itinerary_generation"
             )
             
             raw_response = response.choices[0].message.content
@@ -268,6 +267,28 @@ Make it personal and exciting for {trip.client_name}!"""
         except Exception as e:
             logger.error("openai_call_failed", error=str(e))
             raise e
+    
+    async def _make_openai_request(self, prompt: str):
+        """
+        TC-004: Extracted method for making OpenAI requests (for retry logic).
+        """
+        # Convert sync OpenAI call to async context
+        import asyncio
+        
+        def sync_openai_call():
+            return self.openai_client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": "You are a professional travel planner. Always respond with valid JSON."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.7,
+                max_tokens=2000
+            )
+        
+        # Run in thread pool to avoid blocking
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, sync_openai_call)
     
     def parse_and_validate_response(self, raw_response: str, agency_places: List[AgencyPlace]) -> dict:
         """

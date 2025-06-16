@@ -6,7 +6,8 @@ from fastapi import APIRouter, HTTPException, BackgroundTasks
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 from typing import Optional, Dict, Any
-from datetime import datetime, timezone
+from datetime import datetime, timezone, date
+import json
 
 from .models.database import TripCreate, Trip
 from .models.api import DocumentUploadPayload, DocumentUploadResponse
@@ -757,3 +758,38 @@ async def debug_trip_scheduling(trip_id: UUID):
             "message": f"Debug failed: {str(e)}",
             "error_type": type(e).__name__
         }
+
+
+def to_json_serializable(obj):
+    """
+    Recursively convert UUIDs, datetimes, and other non-serializable types to JSON-serializable equivalents.
+    """
+    if isinstance(obj, dict):
+        return {k: to_json_serializable(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [to_json_serializable(i) for i in obj]
+    elif isinstance(obj, UUID):
+        return str(obj)
+    elif isinstance(obj, (datetime, date)):
+        return obj.isoformat()
+    return obj
+
+@router.get("/itinerary/{trip_id}")
+async def get_itinerary(trip_id: UUID):
+    """
+    Get the latest itinerary for a trip.
+    Returns a fully JSON-serializable response.
+    """
+    try:
+        db_client = SupabaseDBClient()
+        result = await db_client.get_latest_itinerary(trip_id)
+        if result.success:
+            serializable = to_json_serializable(result.data)
+            return JSONResponse(status_code=200, content=serializable)
+        else:
+            return JSONResponse(status_code=500, content={"error": result.error or "Unknown error"})
+    except Exception as e:
+        logger.error("itinerary_retrieval_failed", trip_id=str(trip_id), error=str(e))
+        return JSONResponse(status_code=500, content={"exception": str(e)})
+    finally:
+        await db_client.close()

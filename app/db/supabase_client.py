@@ -6,7 +6,8 @@ from typing import List, Optional, Dict, Any
 from uuid import UUID
 import httpx
 import structlog
-from ..models.database import Trip, TripCreate, NotificationLog, DatabaseResult, AgencyPlace, Itinerary
+from ..models.database import Trip, TripCreate, NotificationLog, DatabaseResult, AgencyPlace, Itinerary, TripContext
+import asyncio
 
 logger = structlog.get_logger()
 
@@ -796,4 +797,132 @@ class SupabaseDBClient:
                 trip_id=str(trip_id),
                 error=str(e)
             )
-            return [] 
+            return []
+
+    async def get_complete_trip_context(self, trip_id: UUID) -> TripContext:
+        """
+        Carga todo el contexto relevante de un viaje en paralelo y lo valida con TripContext.
+        Retorna: TripContext
+        """
+        trip_task = self.get_trip_by_id(trip_id)
+        itinerary_task = self.get_latest_itinerary(trip_id)
+        documents_task = self.get_documents_by_trip(trip_id)
+        messages_task = self.get_recent_conversations(trip_id, limit=10)
+
+        trip_result, itinerary_result, documents, messages = await asyncio.gather(
+            trip_task, itinerary_task, documents_task, messages_task
+        )
+
+        trip = trip_result.data if trip_result and trip_result.success else None
+        itinerary = itinerary_result.data.get("parsed_itinerary") if itinerary_result and itinerary_result.success and itinerary_result.data else None
+        documents = documents if documents else []
+        messages = messages if messages else []
+
+        context = TripContext(
+            trip=trip or {},
+            itinerary=itinerary,
+            documents=documents,
+            recent_messages=messages
+        )
+        return context
+
+    async def get_complete_trip_context_optimized(self, trip_id: UUID) -> TripContext:
+        """
+        TC-004 OPTIMIZED: Carga contexto completo con una sola query SQL usando JOINs.
+        
+        Ventajas vs método anterior:
+        - 1 query vs 4 queries paralelas
+        - Reduce latencia de red
+        - Menos overhead de HTTP requests
+        - Atomic data consistency
+        
+        Args:
+            trip_id: UUID del trip
+            
+        Returns:
+            TripContext completo
+        """
+        try:
+            # Single query with JOINs to get all related data
+            # Note: Supabase PostgREST supports embedding related tables
+            response = await self._client.get(
+                f"{self.rest_url}/trips",
+                params={
+                    "id": f"eq.{trip_id}",
+                    "select": """
+                        *,
+                        itineraries:itineraries(
+                            id, version, status, generated_at, parsed_itinerary,
+                            order: version.desc,
+                            limit: 1
+                        ),
+                        documents:documents(*),
+                        conversations:conversations(
+                            id, sender, message, intent, created_at,
+                            order: created_at.desc,
+                            limit: 10
+                        )
+                    """
+                }
+            )
+            response.raise_for_status()
+            
+            trips_data = response.json()
+            
+            if not trips_data:
+                logger.warning("trip_not_found_optimized", trip_id=str(trip_id))
+                return TripContext(trip={}, itinerary=None, documents=[], recent_messages=[])
+            
+            trip_raw = trips_data[0]
+            
+            # Extract and process embedded data
+            trip = {k: v for k, v in trip_raw.items() if k not in ['itineraries', 'documents', 'conversations']}
+            
+            # Normalize datetime fields to match original method format
+            from datetime import datetime
+            datetime_fields = ['departure_date', 'inserted_at', 'next_check_at']
+            for field in datetime_fields:
+                if field in trip and trip[field] and isinstance(trip[field], str):
+                    try:
+                        # Parse and convert to Python datetime object
+                        dt = datetime.fromisoformat(trip[field].replace('Z', '+00:00'))
+                        trip[field] = dt
+                    except:
+                        pass  # Keep original value if parsing fails
+            
+            # Get latest itinerary
+            itinerary = None
+            if trip_raw.get("itineraries") and len(trip_raw["itineraries"]) > 0:
+                latest_itinerary = trip_raw["itineraries"][0]
+                itinerary = latest_itinerary.get("parsed_itinerary")
+            
+            # Get documents (already sorted)
+            documents = trip_raw.get("documents", [])
+            
+            # Get recent conversations (reverse to chronological order)
+            messages = trip_raw.get("conversations", [])
+            messages.reverse()  # PostgREST returns desc, we want asc for context
+            
+            logger.info("trip_context_loaded_optimized", 
+                trip_id=str(trip_id),
+                has_itinerary=itinerary is not None,
+                documents_count=len(documents),
+                messages_count=len(messages)
+            )
+            
+            context = TripContext(
+                trip=trip,
+                itinerary=itinerary,
+                documents=documents,
+                recent_messages=messages
+            )
+            return context
+            
+        except Exception as e:
+            logger.error("trip_context_load_failed_optimized", 
+                trip_id=str(trip_id),
+                error=str(e)
+            )
+            # Fallback to original method on error
+            logger.info("falling_back_to_original_method", trip_id=str(trip_id))
+            return await self.get_complete_trip_context(trip_id) 
