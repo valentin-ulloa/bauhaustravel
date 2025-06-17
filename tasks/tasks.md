@@ -338,7 +338,7 @@ Optimizar los tres agentes core (NotificationsAgent, ItineraryAgent, ConciergeAg
 
 ---
 
-### ✅ Acceptance Criteria
+### ✅ Acceptance Criteria - 
 
 | ID   | Given / When / Then                                                                                            |
 | ---- | -------------------------------------------------------------------------------------------------------------- |
