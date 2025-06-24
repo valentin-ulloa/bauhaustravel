@@ -45,7 +45,7 @@ class DocumentUploadPayload(BaseModel):
     
     class Config:
         """Pydantic config."""
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "trip_id": "a8bff854-da9f-44e8-9f71-16bbb7438891",
                 "document_type": "boarding_pass",
@@ -66,7 +66,7 @@ class DocumentUploadResponse(BaseModel):
     trip_id: str = Field(..., description="Trip ID the document was attached to")
     
     class Config:
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "success": True,
                 "message": "Document uploaded successfully",

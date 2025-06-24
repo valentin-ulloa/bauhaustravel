@@ -6,6 +6,35 @@
 
 ---
 
+## 🚀 **RAILWAY DEPLOYMENT DEBUGGING** (2025-01-15 - Latest) ⚠️ 
+
+**🎯 Objetivo:** Triggear nuevo deployment y obtener logs detallados del error actual.
+
+**✅ Mejoras Implementadas:**
+- ✅ **Enhanced startup logging** - Environment variables check, Python version, deployment time
+- ✅ **New `/deployment-info` endpoint** - Debugging information accessible via HTTP
+- ✅ **Improved `/health` endpoint** - Detailed environment status for Railway health checks
+- ✅ **Better error handling** - Try/catch blocks around critical startup components
+- ✅ **Requirements.txt optimization** - Version constraints for better compatibility
+
+**🔧 Debug Endpoints Disponibles:**
+```bash
+# Una vez deployado:
+GET /health - Enhanced health status with env checks
+GET /deployment-info - Python version, environment, paths, etc.
+GET / - General status with deployment timestamp
+```
+
+**📊 Expected Logs:** Ahora Railway mostrará logs detallados incluyendo:
+- Environment variables status (sin exponer values)
+- Python version and platform info
+- Scheduler startup success/failure
+- Detailed error messages if startup fails
+
+**⏭️ Next Steps:** Check Railway logs y debug based on specific error messages.
+
+---
+
 ## 🧹 **REPOSITORY CLEANUP** (2025-01-15) - DEPLOYMENT ISSUES RESOLVED ✅
 
 **⚠️ CRITICAL FIX:** Repository cleanup completed to resolve Railway deployment failures.

@@ -1,7 +1,7 @@
 """FastAPI webhooks for Bauhaus Travel."""
 
 from fastapi import APIRouter, HTTPException, BackgroundTasks, Request, Form
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Dict, Any, Optional
 from datetime import datetime, timezone
 import structlog
@@ -20,7 +20,7 @@ class TripInsertPayload(BaseModel):
     type: str  # "INSERT"
     table: str  # "trips"
     record: Dict[str, Any]  # The inserted trip data
-    schema: str = "public"
+    schema_name: str = Field(default="public", alias="schema")  # Renamed to avoid BaseModel.schema shadowing
 
 
 class TwilioInboundMessage(BaseModel):
