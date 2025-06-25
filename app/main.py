@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 from .api.webhooks import router as webhooks_router
 from .router import router as trips_router
 from .api.conversations import router as conversations_router
+from .utils.production_alerts import alerter
 from .services.scheduler_service import SchedulerService
 
 # Load environment variables
@@ -133,7 +134,7 @@ async def root():
 
 @app.get("/health")
 async def health():
-    """Enhanced health check endpoint for Railway debugging."""
+    """Enhanced health check endpoint for Railway debugging with error monitoring."""
     env_status = {
         "ENVIRONMENT": os.getenv("ENVIRONMENT", "not_set"),
         "PORT": os.getenv("PORT", "not_set"),
@@ -141,18 +142,30 @@ async def health():
         "has_supabase_key": bool(os.getenv("SUPABASE_KEY")),
         "has_openai_key": bool(os.getenv("OPENAI_API_KEY")),
         "has_twilio_sid": bool(os.getenv("TWILIO_ACCOUNT_SID")),
-        "has_aero_key": bool(os.getenv("AERO_API_KEY"))
+        "has_aero_key": bool(os.getenv("AERO_API_KEY")),
+        "has_alert_webhook": bool(os.getenv("ALERT_WEBHOOK_URL"))
     }
     
     scheduler_status = scheduler_service.get_job_status() if scheduler_service else {"status": "not_started"}
     
+    # TC-004: Include error monitoring data
+    error_summary = alerter.get_error_summary()
+    
+    # Determine overall health status
+    health_status = "healthy"
+    if error_summary["total_errors"] > 50:  # More than 50 errors is concerning
+        health_status = "degraded"
+    elif scheduler_status.get("status") != "running":
+        health_status = "warning"
+    
     return {
-        "status": "healthy",
+        "status": health_status,
         "service": "bauhaus-travel",
         "timestamp": datetime.utcnow().isoformat(),
         "python_version": sys.version,
         "environment": env_status,
-        "scheduler": scheduler_status
+        "scheduler": scheduler_status,
+        "error_monitoring": error_summary
     }
 
 @app.get("/deployment-info")

@@ -8,6 +8,7 @@ from typing import List, Optional, Dict, Any
 from uuid import UUID
 import structlog
 from openai import OpenAI
+from ..utils.production_alerts import alert_critical_error, alert_api_failure, alert_user_experience_issue
 
 from ..db.supabase_client import SupabaseDBClient
 from ..models.database import Trip, DatabaseResult, TripContext
@@ -306,16 +307,28 @@ class ConciergeAgent:
                     document_id=doc.get('id')
                 )
                 
-                # TODO: In Phase 3, actually send the document file
-                # For now, acknowledge that we have it
-                return f"""¡Perfecto! Tengo tu {self._get_document_type_spanish(document_type)}.
+                # FIXED: Actually send the document link
+                document_url = doc.get('file_url') or doc.get('url') or doc.get('storage_path')
+                
+                if document_url:
+                    # Document available with URL
+                    return f"""¡Perfecto! Aquí tienes tu {self._get_document_type_spanish(document_type)} ✈️
+
+📄 **{doc_name}**
+📅 Subido: {doc.get('uploaded_at', 'Fecha no disponible')[:10]}
+🔗 [Descargar documento]({document_url})
+
+¿Necesitas algo más de tu viaje a {trip.destination_iata}?"""
+                else:
+                    # Document exists but no URL available
+                    return f"""¡Encontré tu {self._get_document_type_spanish(document_type)}! 📄
 
 📄 **{doc_name}**
 📅 Subido: {doc.get('uploaded_at', 'Fecha no disponible')[:10]}
 
-🔄 *Próximamente podrás recibir el archivo directamente por WhatsApp.*
+⚠️ *El archivo está en el sistema pero necesito configurar el link de descarga. Contacta a tu agencia para recibirlo.*
 
-¿Necesitas algo más de tu viaje a {trip.destination_iata}?"""
+¿Puedo ayudarte con algo más?"""
             
             else:
                 # Document not found
@@ -545,6 +558,15 @@ Todo listo para tu viaje a {trip.destination_iata} con el vuelo {trip.flight_num
                     error_code="AI_GENERATION_ERROR",
                     user_message_length=len(user_message)
                 )
+                
+                # TC-004: Send production alert for AI failures
+                await alert_api_failure(
+                    api_name="OpenAI",
+                    error=e,
+                    trip_id=str(trip_id) if trip_id else None,
+                    endpoint="chat/completions"
+                )
+                
                 return "Disculpa, estoy teniendo problemas técnicos. ¿Podrías intentar de nuevo en un momento?"
     
     async def _make_openai_request(self, prompt: str, model: str = "gpt-4o-mini"):
