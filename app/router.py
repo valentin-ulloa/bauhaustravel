@@ -843,8 +843,15 @@ async def cleanup_test_data():
         tables = ["conversations", "itineraries", "notifications_log", "trips"]
         
         for table in tables:
-            result = await db_client.supabase.table(table).delete().neq("id", "nonexistent").execute()
-            cleanup_results[f"{table}_deleted"] = len(result.data) if result.data else 0
+            # Use direct HTTP delete - delete everything
+            response = await db_client._client.delete(
+                f"{db_client.rest_url}/{table}",
+                params={"id": "is.not.null"}  # Delete all records
+            )
+            response.raise_for_status()
+            
+            deleted = response.json() if response.text else []
+            cleanup_results[f"{table}_deleted"] = len(deleted) if deleted else 0
         
         await db_client.close()
         
