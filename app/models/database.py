@@ -18,6 +18,7 @@ class TripCreate(BaseModel):
     status: str = "SCHEDULED"  # Default status
     metadata: Optional[dict] = None
     client_description: Optional[str] = None
+    agency_id: Optional[UUID] = None  # Agency association
 
     @validator('whatsapp')
     def validate_whatsapp(cls, v):

@@ -148,6 +148,7 @@ class SupabaseDBClient:
                 "status": trip_data.status,
                 "metadata": trip_data.metadata,
                 "client_description": trip_data.client_description,
+                "agency_id": str(trip_data.agency_id) if trip_data.agency_id else None,
                 "next_check_at": next_check_at.isoformat()
             }
             
