@@ -5,28 +5,27 @@
 - ✅ **TC-002**: ItineraryAgent (100% Complete) 
 - ✅ **TC-003**: ConciergeAgent Phase 2 (100% Complete)
 - ✅ **TC-004**: Agent Optimization Sprint (100% Complete)
-- ⌛ **TC-005**: Agency Portal & Multi-Tenant System (IN PROGRESS)
+- ⌛ **TC-005**: Agency Portal & Multi-Tenant System (80% Complete - Backend Done)
 - ✅ **Production Deployment**: LIVE at `https://web-production-92d8d.up.railway.app`
 - ✅ **Automatic Itinerary Generation**: COMPLETELY WORKING ✅
 
 ---
 
-## 🚀 **STRATEGIC DEVELOPMENT ROADMAP** (Updated 2025-01-06)
+## 🚀 **STRATEGIC DEVELOPMENT ROADMAP** (Updated 2025-01-16)
 
-### **CORE PLATFORM STATUS: MVP COMPLETE** ✅
-All foundational agents are production-ready with intelligent automation. System successfully generating and delivering personalized itineraries automatically.
+### **CORE PLATFORM STATUS: B2B-READY BACKEND** ✅
+All foundational agents optimized + Agency Portal backend complete with working APIs. Ready for frontend development and first agency onboarding.
 
 ---
 
-## 🛠️ **IMMEDIATE PRIORITY: AGENT OPTIMIZATION** (Next 2-3 weeks)
-*Focus: Perfect the MVP before scaling - Optimize existing agents for production excellence*
+## 🛠️ **CURRENT PRIORITY: AGENCY PORTAL FRONTEND** (Next 1-2 weeks)
+*Focus: Complete B2B MVP with working agency dashboard*
 
-### **🎯 PHILOSOPHY: "Make it Excellent Before Making it More"**
-Before building Agency Portal or new features, optimize our core 3-agent system to be:
-- **Sub-2 second response times**
-- **99%+ reliability** 
-- **10x better AI quality**
-- **Production-grade security**
+### **🎯 IMMEDIATE SPRINT: V0.dev Frontend Development**
+Backend APIs are tested and working. Time to create the agency dashboard that will enable B2B sales:
+- **Real API endpoints**: /agencies/{id}/stats, /trips working with production data
+- **Multi-tenant ready**: Database schema + isolation complete
+- **5 real trips**: TK16→GRU, AR1303→MIA validated in production
 
 ---
 
@@ -271,3 +270,18 @@ class TripContext(BaseModel):
     itinerary: Optional[dict]
     documents: List[dict]
     recent_messages: List[dict] 
+
+# Si quieres profundizar en un tema específico:
+python scripts/test_timezone_validation.py    # Tema timezones
+python scripts/test_landing_detection.py      # Landing detection 
+python scripts/test_duplicate_prevention.py   # Duplicados
+python scripts/test_error_alerting.py         # Sistema de alertas 
+
+# Verifica que las notificaciones funcionen
+curl -X POST https://web-production-92d8d.up.railway.app/test-flight-polling
+
+# Verifica salud del sistema
+curl https://web-production-92d8d.up.railway.app/health
+
+# Verifica stats de la agencia
+curl https://web-production-92d8d.up.railway.app/agencies/00000000-0000-0000-0000-000000000001/stats 

@@ -71,19 +71,142 @@ ADMIN_EMAIL=vale@bauhaustravel.com
 - ✅ **Backward Compatibility**: Nagori Travel como agencia default para datos existentes
 - ✅ **Triggers**: Auto-update de timestamps en agencies table
 
-### **⌛ 3. PENDING TASKS:**
-- ⌛ **Run Migration**: Aplicar migration 007 en Supabase production
-- ⌛ **Frontend Dashboard**: V0.dev dashboard con login y stats
+### **✅ 3. DATABASE & API TESTING - COMPLETADO**
+- ✅ **Migration 007 Applied**: Successfully applied in Supabase production
+- ✅ **API Endpoints Tested**: GET /agencies/{id}/stats, /trips working correctly
+- ✅ **Multi-tenant Isolation**: Verified Nagori Travel agency with real data
+- ✅ **Real Data Validation**: 5 trips, 58 conversations, proper foreign keys
+
+### **⌛ 4. FRONTEND DEVELOPMENT - EN PROGRESO**
+- ⌛ **V0.dev Dashboard**: Agency portal con stats y client management
+- ⌛ **GitHub Integration**: V0 deployment strategy
 - ⌛ **Trip Association**: Modificar POST /trips para incluir agency_id
 - ⌛ **Branding Integration**: WhatsApp messages con branding personalizado
 
-**🎯 NEXT STEPS:**
-1. **Aplicar Migration 007** en Supabase
-2. **Test API Endpoints** con Postman/curl
-3. **Crear Frontend** en V0.dev
-4. **Integrar Agency Branding** en WhatsApp templates
+**🎯 CURRENT FOCUS:**
+1. ✅ **Backend Complete** - APIs tested and working with real data
+2. ⌛ **V0.dev Frontend** - Create dashboard using proven API endpoints (Personal GitHub account)
+3. ⌛ **Integration Strategy** - Connect V0 frontend with Railway backend
+4. ⌛ **Business Migration** - Plan post-MVP migration to Nagori accounts
 
-**📊 Progress: 60% Complete** - Backend foundation ready, need frontend + integration
+**📋 ACCOUNT STRATEGY:**
+- **MVP Phase**: Personal accounts (valenulloa) for maximum velocity
+- **Post-MVP**: Migrate to business accounts (nagori) after product validation
+- **Migration Plan**: Repository transfer + service reconnections scheduled for Week 3-4
+
+**📊 Progress: 80% Complete** - Backend + APIs working, V0 frontend in progress
+
+### **🔍 SYSTEM VALIDATION SCRIPTS CREATED** (2025-01-16 - Latest)
+
+**Purpose:** Comprehensive validation suite to identify and fix critical system issues while working on V0 frontend.
+
+**✅ Validation Scripts Created:**
+- ✅ `scripts/test_timezone_validation.py` - Tests quiet hours accuracy across timezones
+- ✅ `scripts/test_landing_detection.py` - Validates landing detection functionality
+- ✅ `scripts/test_duplicate_prevention.py` - Tests duplicate notification prevention
+- ✅ `scripts/test_error_alerting.py` - Validates error alerting system
+- ✅ `scripts/run_full_validation.py` - Master script with actionable recommendations
+
+**🎯 Key Issues Identified:**
+1. **🔴 CRITICAL: Timezone Handling** - Quiet hours using UTC instead of flight local time
+2. **🟡 MEDIUM: Landing Detection** - Currently placeholder implementation only
+3. **🟡 MEDIUM: Error Alerting** - Missing environment variables (ALERT_WEBHOOK_URL, ADMIN_EMAIL)
+4. **🟢 LOW: Duplicate Prevention** - Basic checks exist but could be improved
+
+**⚡ Quick Execution Plan:**
+```bash
+# Run full validation (10-15 minutes)
+python scripts/run_full_validation.py
+
+# Individual tests (2-3 minutes each)
+python scripts/test_timezone_validation.py
+python scripts/test_landing_detection.py
+python scripts/test_duplicate_prevention.py
+python scripts/test_error_alerting.py
+```
+
+**🛠️ Immediate Actions While Working on V0:**
+1. **Environment Setup**: Add ALERT_WEBHOOK_URL + ADMIN_EMAIL to Railway
+2. **Quick Test**: `curl -X POST /test-flight-polling` to verify notifications
+3. **Monitor Logs**: Railway logs for timezone mismatches or duplicate alerts
+4. **Health Check**: `curl /health` to verify system status
+
+---
+
+## 🎉 **V0 DASHBOARD COMPLETED** (2025-01-16 - Latest) ✅
+
+**🚀 V0 Status:** Frontend dashboard completado con datos mock, listo para integración backend.
+
+**✅ V0 Features Implemented:**
+- ✅ **Dashboard Principal** - KPIs, acciones rápidas, overview
+- ✅ **Gestión de Viajes** - CRUD completo con filtros avanzados  
+- ✅ **Sistema de Conversaciones** - Chat IA/Humano con timeline
+- ✅ **Analytics Avanzados** - ROI, performance, métricas clave
+- ✅ **Sidebar Colapsible** - Navegación premium con search
+- ✅ **Stack Técnico**: Next.js 14 + TypeScript + React Query + Tailwind + shadcn/ui
+
+**🔗 Integration Requirements:** 
+- Backend APIs: ✅ Working (`https://web-production-92d8d.up.railway.app`)
+- Agency Stats: ✅ Tested (`/agencies/.../stats` → 94% satisfaction, $250 revenue)
+- Trips Data: ✅ Tested (`/agencies/.../trips` → 5 real trips)
+- Health Check: ✅ Tested (`/health` → System healthy)
+
+---
+
+## 🚨 **CRITICAL FIXES IDENTIFIED** (Ready to implement post-V0)
+
+### **🔴 CRITICAL: Timezone Bug (Confirmed)**
+**Problem:** Clients in Japan receive notifications at midnight (00:35 AM) due to UTC-based quiet hours
+**Impact:** Bad UX for international clients 
+**Location:** `app/agents/notifications_agent.py:206` (TODO comment exists)
+**Test Results:** 1/7 airports tested show mismatch (NRT timezone)
+**Fix Required:** 
+```python
+# Current (BROKEN):
+current_hour = now_utc.hour
+if not (9 <= current_hour <= 20):  # Uses UTC
+
+# Fix (NEEDED):
+# 1. Map origin_iata to timezone (GRU→America/Sao_Paulo, MEX→America/Mexico_City)
+# 2. Convert UTC to local airport time
+# 3. Check quiet hours in local time
+```
+
+### **🟡 MEDIUM: Landing Detection (Placeholder)**
+**Problem:** `poll_landed_flights()` returns success but does nothing
+**Impact:** No welcome messages when clients land
+**Test Results:** Real trip TK16 shows "Arrived / Gate Arrival" but no detection logic
+**Location:** `app/agents/notifications_agent.py:497-510`
+
+### **🟡 MEDIUM: Error Alerting (Not Configured)**  
+**Problem:** System has alerts but no webhook/email configured
+**Impact:** No notifications when system has issues
+**Test Results:** `has_alert_webhook: false`, `has_supabase_key: false`
+**Fix Required:** Set Railway environment variables
+
+### **⚡ QUICK FIXES (5 min)**
+1. **Railway Environment Variables:**
+   ```bash
+   ALERT_WEBHOOK_URL=https://discord.com/api/webhooks/YOUR_WEBHOOK
+   ADMIN_EMAIL=vale@bauhaustravel.com
+   ```
+
+2. **Immediate Test:**
+   ```bash
+   curl -X POST /trips -H "Content-Type: application/json" \
+     -d '{"client_name":"Test Timezone","whatsapp":"+5491140383422","flight_number":"TEST789","origin_iata":"NRT","destination_iata":"GRU","departure_date":"2025-07-05T10:00:00+09:00"}'
+   ```
+
+**🧪 API Test Results:**
+```bash
+✅ GET /agencies/00000000-0000-0000-0000-000000000001/stats
+   → {"total_trips":5,"active_trips":0,"total_conversations":58...}
+
+✅ GET /agencies/00000000-0000-0000-0000-000000000001/trips  
+   → 5 real trips including TK16→GRU, AR1303→MIA
+
+✅ Multi-tenant isolation working correctly
+```
 
 ---
 

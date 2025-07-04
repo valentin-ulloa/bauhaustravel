@@ -26,6 +26,9 @@ python-multipart>=0.0.6
 # Date/Time handling for Python < 3.9
 zoneinfo; python_version < "3.9"
 
+# Timezone utilities
+pytz>=2024.1
+
 # Testing Dependencies
 pytest>=7.4.0
 pytest-asyncio>=0.21.0

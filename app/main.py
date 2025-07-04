@@ -4,10 +4,11 @@ import os
 import sys
 import structlog
 from datetime import datetime
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
+import traceback
 
 from .api.webhooks import router as webhooks_router
 from .router import router as trips_router
@@ -80,6 +81,17 @@ async def lifespan(app: FastAPI):
         logger.error("application_startup_failed", error=str(e), error_type=type(e).__name__)
         raise
     
+    # Start scheduler service for automated notifications
+    try:
+        await scheduler_service.start()
+        logger.info("scheduler_started", 
+                   jobs_count=len(scheduler_service.scheduler.get_jobs()),
+                   startup_time=datetime.utcnow().isoformat())
+    except Exception as e:
+        logger.error("scheduler_startup_failed", error=str(e), traceback=traceback.format_exc())
+        # Don't fail the app if scheduler fails to start
+        pass
+    
     yield
     
     # Shutdown
@@ -95,15 +107,22 @@ async def lifespan(app: FastAPI):
 # Create FastAPI application
 app = FastAPI(
     title="Bauhaus Travel API",
-    description="AI-powered travel assistant with autonomous agents",
+    description="AI-powered travel assistant with WhatsApp integration",
     version="1.0.0",
     lifespan=lifespan
 )
 
-# Add CORS middleware
+# Add CORS middleware for V0.dev and frontend integration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Configure based on your needs
+    allow_origins=[
+        "http://localhost:3000",  # Local development
+        "http://localhost:5173",  # Vite dev server
+        "https://*.vercel.app",   # Vercel deployments
+        "https://*.netlify.app",  # Netlify deployments  
+        "https://*.v0.dev",       # V0.dev preview
+        "https://web-production-92d8d.up.railway.app"  # Same origin
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

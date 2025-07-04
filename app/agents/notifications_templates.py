@@ -165,12 +165,14 @@ class WhatsAppTemplates:
         Template: confirmacion_reserva (HX01a541412cda42dd91bff6995fdc3f4a)
         Variables: {{1}} name, {{2}} flight_number, {{3}} origin, {{4}} destination, {{5}} departure_date (formatted as hh:mm hs)
         """
-        # Parse departure date and keep original timezone (no conversion to UTC)
-        # trip_data["departure_date"] comes in ISO format with timezone, e.g. "2025-06-10T13:40:00-03:00"
+        from ..utils.timezone_utils import format_departure_time_local
+        
+        # Parse departure date (comes from DB as UTC ISO string)
         departure_datetime = datetime.fromisoformat(trip_data["departure_date"])
         
-        # Format in local time (preserve original timezone)
-        formatted_time = departure_datetime.strftime("%-d %b %H:%M hs")  # Ej.: "10 Jun 13:40 hs"
+        # Convert UTC to local airport time for display
+        origin_iata = trip_data["origin_iata"]
+        formatted_time = format_departure_time_local(departure_datetime, origin_iata)
         
         template_info = cls.TEMPLATES[NotificationType.RESERVATION_CONFIRMATION]
         return {

@@ -523,6 +523,33 @@ async def test_flight_polling():
             await notifications_agent.close()
 
 
+@router.get("/test-timezone/{airport_iata}")
+async def test_timezone(airport_iata: str):
+    """Test timezone conversion for airport notifications"""
+    from .utils.timezone_utils import get_timezone_info, format_departure_time_local
+    from datetime import datetime, timezone
+    
+    # Get timezone info for airport
+    tz_info = get_timezone_info(airport_iata)
+    
+    # Test with current time and a sample departure time
+    now_utc = datetime.now(timezone.utc)
+    sample_departure = datetime(2025, 7, 5, 17, 32, tzinfo=timezone.utc)  # UTC time from your example
+    
+    # Format the time as it would appear in notifications
+    formatted_time = format_departure_time_local(sample_departure, airport_iata)
+    
+    return {
+        "airport": airport_iata.upper(),
+        "timezone_info": tz_info,
+        "test_case": {
+            "utc_time": sample_departure.isoformat(),
+            "formatted_for_notification": formatted_time,
+            "explanation": f"Your flight at 17:32 UTC would show as '{formatted_time}' in WhatsApp"
+        }
+    }
+
+
 @router.get("/scheduler/status")
 async def get_scheduler_status():
     """Get current scheduler status and job information"""

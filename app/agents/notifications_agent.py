@@ -197,13 +197,13 @@ class NotificationsAgent:
                     logger.info("24h_reminder_already_sent", trip_id=str(trip.id))
                     continue
                 
-                # Check time window (simplified - using UTC for now)
-                # TODO: Implement timezone conversion based on origin_iata
-                current_hour = now_utc.hour
-                if not (9 <= current_hour <= 20):
+                # Check time window using origin airport timezone
+                is_quiet_hours = is_quiet_hours_local(now_utc, trip.origin_iata)
+                if is_quiet_hours:
                     logger.info("24h_reminder_outside_window", 
                         trip_id=str(trip.id),
-                        current_hour=current_hour
+                        origin_iata=trip.origin_iata,
+                        local_quiet_hours=True
                     )
                     continue
                 
@@ -258,8 +258,10 @@ class NotificationsAgent:
         now_utc = datetime.now(timezone.utc)
         current_hour = now_utc.hour
         
-        # Respect quiet hours (20:00-09:00) - no notifications during this time
-        is_quiet_hours = current_hour < 9 or current_hour >= 20
+        # Import timezone utilities for local time checking
+        from ..utils.timezone_utils import is_quiet_hours_local
+        
+        # NOTE: We'll check quiet hours per trip based on origin airport timezone
         
         try:
             # Get trips that need status polling (departure > now AND next_check_at <= now)
@@ -313,6 +315,9 @@ class NotificationsAgent:
                     
                     # Process each change and send notifications
                     for change in changes:
+                        # Check quiet hours based on origin airport timezone
+                        is_quiet_hours = is_quiet_hours_local(now_utc, trip.origin_iata)
+                        
                         if not is_quiet_hours:  # Only send notifications during allowed hours
                             await self._process_flight_change(trip, change, current_status)
                             notifications_sent += 1
@@ -320,7 +325,8 @@ class NotificationsAgent:
                             logger.info("notification_deferred_quiet_hours", 
                                 trip_id=str(trip.id),
                                 change_type=change["type"],
-                                current_hour=current_hour
+                                origin_iata=trip.origin_iata,
+                                local_quiet_hours=True
                             )
                     
                     # Update next check time based on poll optimization rules

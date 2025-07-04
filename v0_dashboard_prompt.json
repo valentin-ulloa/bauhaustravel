@@ -1,0 +1,286 @@
+{
+  "project_context": {
+    "name": "Nagori Travel Agency Dashboard",
+    "type": "B2B SaaS Dashboard",
+    "target_audience": "Travel agency owners and operators",
+    "brand_alignment": "Matches existing landing at nagori.travel",
+    "deployment_target": "app.nagori.travel"
+  },
+  
+  "technical_specs": {
+    "framework": "React/Next.js",
+    "styling": "Tailwind CSS",
+    "api_integration": "REST API with fetch",
+    "backend_base_url": "https://web-production-92d8d.up.railway.app",
+    "authentication": "Demo mode (no auth required initially)",
+    "responsive_design": "Mobile-first approach"
+  },
+  
+  "brand_guidelines": {
+    "primary_color": "#FF6B35",
+    "secondary_color": "#2D3748", 
+    "accent_color": "#F7931E",
+    "typography": "Clean, modern sans-serif",
+    "design_inspiration": "Linear, Stripe, Notion",
+    "ui_personality": "Professional, trustworthy, efficient"
+  },
+  
+  "api_endpoints": {
+    "agency_stats": {
+      "method": "GET",
+      "url": "/agencies/{agency_id}/stats",
+      "sample_response": {
+        "total_trips": 5,
+        "active_trips": 0,
+        "total_conversations": 58,
+        "satisfaction_rate": 0.94,
+        "revenue_current_month": 250.0,
+        "revenue_total": 250.0,
+        "top_destinations": ["GRU", "MIA", "NYC"],
+        "avg_response_time": 1.8
+      }
+    },
+    "agency_trips": {
+      "method": "GET", 
+      "url": "/agencies/{agency_id}/trips",
+      "sample_response": [
+        {
+          "id": "uuid",
+          "client_name": "Valentín María Ulloa",
+          "flight_number": "TK16",
+          "origin_iata": "EZE",
+          "destination_iata": "GRU", 
+          "departure_date": "2025-01-20T10:30:00Z",
+          "status": "confirmed"
+        }
+      ]
+    }
+  },
+  
+  "page_structure": {
+    "layout": {
+      "sidebar": {
+        "logo": "Nagori brand logo",
+        "navigation": [
+          {"label": "Dashboard", "icon": "dashboard", "route": "/"},
+          {"label": "Trips", "icon": "airplane", "route": "/trips"},
+          {"label": "Conversations", "icon": "chat", "route": "/conversations"},
+          {"label": "Analytics", "icon": "chart", "route": "/analytics"},
+          {"label": "Settings", "icon": "settings", "route": "/settings"}
+        ],
+        "bottom_section": {
+          "agency_info": "Current agency details",
+          "plan_badge": "Growth Plan",
+          "upgrade_cta": "Upgrade Plan"
+        }
+      },
+      "header": {
+        "breadcrumbs": "Current page path",
+        "user_menu": "Agency admin dropdown",
+        "notifications": "Bell icon with count"
+      },
+      "main_content": "Dynamic page content"
+    }
+  },
+  
+  "dashboard_overview": {
+    "hero_section": {
+      "welcome_message": "Buenos días, [Agency Name]",
+      "subtitle": "Aquí está el resumen de tu agencia hoy",
+      "quick_actions": [
+        {"label": "Crear viaje", "style": "primary", "icon": "plus"},
+        {"label": "Ver conversaciones", "style": "secondary", "icon": "chat"}
+      ]
+    },
+    
+    "kpi_cards": [
+      {
+        "title": "Viajes Totales", 
+        "value": "5",
+        "trend": "+20% vs mes anterior",
+        "icon": "airplane",
+        "color": "blue"
+      },
+      {
+        "title": "Conversaciones",
+        "value": "58", 
+        "trend": "+15% vs mes anterior",
+        "icon": "chat",
+        "color": "green"
+      },
+      {
+        "title": "Satisfacción",
+        "value": "94%",
+        "trend": "+2% vs mes anterior", 
+        "icon": "heart",
+        "color": "orange"
+      },
+      {
+        "title": "Tiempo Respuesta",
+        "value": "1.8s",
+        "trend": "-0.3s vs mes anterior",
+        "icon": "clock",
+        "color": "purple"
+      }
+    ],
+    
+    "charts_section": {
+      "revenue_chart": {
+        "title": "Ingresos Mensuales",
+        "type": "line_chart",
+        "data": "Monthly revenue progression",
+        "timeframe": "Últimos 6 meses"
+      },
+      "destinations_chart": {
+        "title": "Destinos Populares", 
+        "type": "bar_chart",
+        "data": "Top destinations from API"
+      }
+    },
+    
+    "recent_activity": {
+      "title": "Actividad Reciente",
+      "items": [
+        {
+          "type": "trip_created",
+          "message": "Nuevo viaje creado: TK16 - Valentín → São Paulo",
+          "timestamp": "Hace 2 horas",
+          "icon": "airplane"
+        },
+        {
+          "type": "conversation", 
+          "message": "Cliente preguntó sobre boarding pass - AI respondió",
+          "timestamp": "Hace 3 horas",
+          "icon": "chat"
+        }
+      ]
+    }
+  },
+  
+  "trips_page": {
+    "header": {
+      "title": "Gestión de Viajes",
+      "actions": [
+        {"label": "Crear viaje", "style": "primary"},
+        {"label": "Exportar", "style": "secondary"}
+      ]
+    },
+    "filters": {
+      "search": "Buscar por cliente o vuelo",
+      "status_filter": ["Todos", "Confirmado", "En proceso", "Completado"],
+      "date_range": "Selector de fechas"
+    },
+    "table": {
+      "columns": [
+        {"key": "client_name", "label": "Cliente", "sortable": true},
+        {"key": "flight_number", "label": "Vuelo", "sortable": true}, 
+        {"key": "route", "label": "Ruta", "format": "origin → destination"},
+        {"key": "departure_date", "label": "Fecha", "format": "date"},
+        {"key": "status", "label": "Estado", "format": "badge"},
+        {"key": "actions", "label": "Acciones", "format": "dropdown"}
+      ],
+      "pagination": true,
+      "items_per_page": 10
+    }
+  },
+  
+  "conversations_page": {
+    "layout": "Chat-style interface",
+    "features": [
+      "Real-time conversation view",
+      "AI vs Human message distinction", 
+      "Response time metrics",
+      "Satisfaction ratings",
+      "Search and filter capabilities"
+    ]
+  },
+  
+  "analytics_page": {
+    "widgets": [
+      {
+        "title": "Rendimiento IA",
+        "metrics": ["Tiempo respuesta", "Precisión", "Satisfacción"],
+        "chart_type": "line"
+      },
+      {
+        "title": "Volume de Conversaciones", 
+        "metrics": ["Mensajes/día", "Consultas resueltas", "Escaladas"],
+        "chart_type": "bar"
+      },
+      {
+        "title": "ROI Analysis",
+        "metrics": ["Tiempo ahorrado", "Clientes satisfechos", "Ingresos generados"],
+        "chart_type": "metrics_grid"
+      }
+    ]
+  },
+  
+  "component_specifications": {
+    "loading_states": {
+      "cards": "Skeleton loading for KPI cards",
+      "tables": "Shimmer effect for table rows",
+      "charts": "Spinner with loading text"
+    },
+    "error_handling": {
+      "api_failures": "Retry button with error message",
+      "empty_states": "Helpful illustrations and CTAs",
+      "network_issues": "Offline indicator"
+    },
+    "interactions": {
+      "hover_effects": "Subtle elevation and color changes",
+      "click_feedback": "Loading states and success confirmations", 
+      "animations": "Smooth transitions, no jarring movements"
+    }
+  },
+  
+  "data_integration": {
+    "demo_agency_id": "00000000-0000-0000-0000-000000000001",
+    "api_error_handling": "Graceful fallbacks to demo data",
+    "real_time_updates": "Refresh data every 30 seconds",
+    "caching_strategy": "Cache API responses for 5 minutes"
+  },
+  
+  "accessibility": {
+    "standards": "WCAG 2.1 AA compliance",
+    "features": [
+      "Keyboard navigation",
+      "Screen reader compatibility", 
+      "High contrast mode support",
+      "Focus indicators",
+      "Alt text for images"
+    ]
+  },
+  
+  "performance_requirements": {
+    "initial_load": "< 3 seconds",
+    "page_transitions": "< 200ms",
+    "api_calls": "Loading states for > 500ms",
+    "bundle_size": "Optimized for production"
+  },
+  
+  "implementation_priorities": [
+    {
+      "phase": 1,
+      "features": ["Dashboard overview", "Basic navigation", "KPI cards"],
+      "timeline": "First iteration"
+    },
+    {
+      "phase": 2, 
+      "features": ["Trips table", "API integration", "Real data display"],
+      "timeline": "Second iteration"
+    },
+    {
+      "phase": 3,
+      "features": ["Analytics charts", "Conversations view", "Advanced features"], 
+      "timeline": "Third iteration"
+    }
+  ],
+  
+  "success_criteria": {
+    "user_experience": "Agency owners can quickly understand their business metrics",
+    "functionality": "All API endpoints display data correctly",
+    "design": "Professional appearance that builds trust",
+    "performance": "Fast loading and smooth interactions",
+    "scalability": "Easy to add new features and pages"
+  }
+} 
