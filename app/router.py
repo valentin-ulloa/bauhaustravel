@@ -830,50 +830,27 @@ async def get_itinerary(trip_id: UUID):
 async def cleanup_test_data():
     """
     ADMIN ENDPOINT: Clean up all test data to start fresh.
-    
-    This will:
-    - Delete all trips
-    - Delete all conversations
-    - Delete all itineraries
-    - Delete all notifications_log
-    - Reset to clean state
     """
     from datetime import datetime
     
     try:
         db_client = SupabaseDBClient()
         
-        # Count current data before cleanup
-        trips_count_result = await db_client.supabase.table("trips").select("id").execute()
-        current_trips = len(trips_count_result.data) if trips_count_result.data else 0
-        
-        # Delete all data (CASCADE will handle related records)
+        # Simple cleanup - delete all records
         cleanup_results = {}
         
-        # Delete conversations
-        conversations_result = await db_client.supabase.table("conversations").delete().neq("id", "00000000-0000-0000-0000-000000000000").execute()
-        cleanup_results["conversations_deleted"] = len(conversations_result.data) if conversations_result.data else 0
+        # Delete in order (foreign keys)
+        tables = ["conversations", "itineraries", "notifications_log", "trips"]
         
-        # Delete itineraries
-        itineraries_result = await db_client.supabase.table("itineraries").delete().neq("id", "00000000-0000-0000-0000-000000000000").execute()
-        cleanup_results["itineraries_deleted"] = len(itineraries_result.data) if itineraries_result.data else 0
-        
-        # Delete notifications_log
-        notifications_result = await db_client.supabase.table("notifications_log").delete().neq("id", "00000000-0000-0000-0000-000000000000").execute()
-        cleanup_results["notifications_deleted"] = len(notifications_result.data) if notifications_result.data else 0
-        
-        # Delete trips (this will cascade to related data)
-        trips_result = await db_client.supabase.table("trips").delete().neq("id", "00000000-0000-0000-0000-000000000000").execute()
-        cleanup_results["trips_deleted"] = len(trips_result.data) if trips_result.data else 0
+        for table in tables:
+            result = await db_client.supabase.table(table).delete().neq("id", "nonexistent").execute()
+            cleanup_results[f"{table}_deleted"] = len(result.data) if result.data else 0
         
         await db_client.close()
         
         return {
             "success": True,
             "message": "Database cleaned successfully",
-            "before_cleanup": {
-                "trips": current_trips
-            },
             "cleanup_results": cleanup_results,
             "timestamp": datetime.now().isoformat()
         }
