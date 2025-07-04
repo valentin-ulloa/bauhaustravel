@@ -14,6 +14,7 @@ from .notifications_agent import NotificationsAgent
 from .notifications_templates import NotificationType
 # TC-004: Import retry logic
 from ..utils.retry_logic import retry_async, RetryConfigs
+from ..utils.timezone_utils import format_departure_time_local
 
 logger = structlog.get_logger()
 
@@ -192,7 +193,7 @@ TRIP DETAILS:
 - Traveler: {trip.client_name}
 - Destination: {trip.destination_iata} (from {trip.origin_iata})
 - Flight: {trip.flight_number}
-- Departure: {trip.departure_date.strftime('%Y-%m-%d %H:%M')}
+- Departure: {trip.departure_date.strftime('%Y-%m-%d')} at {format_departure_time_local(trip.departure_date, trip.origin_iata)}
 - Duration: {trip_duration} days
 
 TRAVELER PROFILE:

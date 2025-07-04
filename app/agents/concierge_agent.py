@@ -410,13 +410,15 @@ Te recomiendo contactar a tu agencia de viajes para que suban el documento.
     
     async def _handle_flight_info_request(self, trip: Trip) -> str:
         """Handle flight information requests."""
-        departure_date = trip.departure_date.strftime("%d/%m/%Y a las %H:%M")
+        # Convert UTC departure time to local airport time
+        from ..utils.timezone_utils import format_departure_time_local
+        formatted_time = format_departure_time_local(trip.departure_date, trip.origin_iata)
         
         return f"""Aquí tienes la información de tu vuelo ✈️:
 
 🛫 **{trip.flight_number}**
 📍 {trip.origin_iata} → {trip.destination_iata}
-📅 {departure_date}
+📅 {trip.departure_date.strftime("%d/%m/%Y")} a las {formatted_time}
 🎯 Estado: {trip.status}
 
 ℹ️ *Te notificaré automáticamente sobre cualquier cambio de horario, puerta o retrasos.*

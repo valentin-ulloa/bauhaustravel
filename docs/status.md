@@ -155,22 +155,23 @@ python scripts/test_error_alerting.py
 
 ## 🚨 **CRITICAL FIXES IDENTIFIED** (Ready to implement post-V0)
 
-### **🔴 CRITICAL: Timezone Bug (Confirmed)**
-**Problem:** Clients in Japan receive notifications at midnight (00:35 AM) due to UTC-based quiet hours
-**Impact:** Bad UX for international clients 
-**Location:** `app/agents/notifications_agent.py:206` (TODO comment exists)
-**Test Results:** 1/7 airports tested show mismatch (NRT timezone)
-**Fix Required:** 
-```python
-# Current (BROKEN):
-current_hour = now_utc.hour
-if not (9 <= current_hour <= 20):  # Uses UTC
+### **✅ FIXED: Timezone Bug (2025-01-16)** 
+**Problem:** ❌ WhatsApp notifications showed UTC time instead of local airport time
+**Example:** Flight at 14:32 Argentina → WhatsApp showed "17:32 hs" (4 hour error)
+**Impact:** Confusing for clients across different timezones
+**Solution:** ✅ **DEPLOYED**
+- Added `timezone_utils.py` with IATA → timezone mapping for 25+ airports
+- Fixed `notifications_templates.py` to use local airport time
+- Updated quiet hours logic to use local timezone (not UTC)
+- Added pytz dependency for robust timezone handling
 
-# Fix (NEEDED):
-# 1. Map origin_iata to timezone (GRU→America/Sao_Paulo, MEX→America/Mexico_City)
-# 2. Convert UTC to local airport time
-# 3. Check quiet hours in local time
-```
+**✅ Validation Results:**
+- EZE (Argentina): 17:32 UTC → 14:32 hs local ✅
+- PTY (Panama): 17:32 UTC → 12:32 hs local ✅  
+- Test trip: CM0279 showing correct "6 Jul 14:32 hs" ✅
+- Quiet hours now respect local airport timezone ✅
+
+**Supported Airports:** Argentina, Brazil, Mexico, USA, Panama, Chile, Colombia, Peru, Spain, Turkey, UK
 
 ### **🟡 MEDIUM: Landing Detection (Placeholder)**
 **Problem:** `poll_landed_flights()` returns success but does nothing
