@@ -202,6 +202,53 @@ async def deployment_info():
         "platform": sys.platform
     }
 
+@app.get("/test-concierge-timezone/{trip_id}")
+async def test_concierge_timezone(trip_id: str):
+    """
+    Test timezone fix in ConciergeAgent without WhatsApp integration.
+    
+    This endpoint simulates a flight info request to verify the timezone
+    conversion is working correctly.
+    """
+    from app.agents.concierge_agent import ConciergeAgent
+    from app.db.supabase_client import SupabaseDBClient
+    from app.models.database import Trip
+    
+    try:
+        # Get the trip
+        db_client = SupabaseDBClient()
+        trip_result = await db_client.get_trip_by_id(trip_id)
+        
+        if not trip_result.success:
+            return {"error": f"Trip not found: {trip_result.error}"}
+        
+        trip = Trip(**trip_result.data)
+        
+        # Test ConciergeAgent._handle_flight_info_request directly
+        concierge = ConciergeAgent()
+        
+        # Call the method that formats flight info
+        flight_info_response = await concierge._handle_flight_info_request(trip)
+        
+        await concierge.close()
+        await db_client.close()
+        
+        return {
+            "trip_id": trip_id,
+            "flight_number": trip.flight_number,
+            "origin_iata": trip.origin_iata,
+            "departure_date_utc": trip.departure_date.isoformat(),
+            "concierge_response": flight_info_response,
+            "validation": {
+                "utc_time": trip.departure_date.strftime("%H:%M"),
+                "expected_local_time": "14:32 hs" if trip.origin_iata == "EZE" else "local time",
+                "timezone_fix_applied": "✅ if shows local time, ❌ if shows UTC"
+            }
+        }
+    
+    except Exception as e:
+        return {"error": f"Test failed: {str(e)}"}
+
 # Utility function to access scheduler from other modules
 def get_scheduler() -> SchedulerService:
     """Get the global scheduler instance"""
