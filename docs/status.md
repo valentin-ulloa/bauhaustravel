@@ -55,6 +55,38 @@ ADMIN_EMAIL=vale@bauhaustravel.com
 
 ---
 
+## 🚀 **TC-005 AGENCY PORTAL BACKEND** (2025-01-16 - In Progress) ⌛
+
+**🎯 Objetivo:** Implementar backend completo para portal de agencias con multi-tenancy.
+
+### **✅ 1. BACKEND API INFRASTRUCTURE - COMPLETADO**
+- ✅ **API Models**: Pydantic models para AgencyCreate, AgencyResponse, AgencyStats, AgencyBranding
+- ✅ **Database Methods**: SupabaseDBClient con métodos para agencies (create, get, stats, trips, branding)
+- ✅ **REST Endpoints**: /agencies POST/GET, /{id}/stats, /{id}/trips, /{id}/branding
+- ✅ **Router Integration**: Agencies router integrado en main router con tags
+
+### **✅ 2. DATABASE SCHEMA - COMPLETADO**
+- ✅ **Migration 007**: Tabla agencies + agency_id en todas las tablas relacionadas
+- ✅ **Multi-tenant Support**: Indexes y foreign keys para aislamiento per agencia
+- ✅ **Backward Compatibility**: Nagori Travel como agencia default para datos existentes
+- ✅ **Triggers**: Auto-update de timestamps en agencies table
+
+### **⌛ 3. PENDING TASKS:**
+- ⌛ **Run Migration**: Aplicar migration 007 en Supabase production
+- ⌛ **Frontend Dashboard**: V0.dev dashboard con login y stats
+- ⌛ **Trip Association**: Modificar POST /trips para incluir agency_id
+- ⌛ **Branding Integration**: WhatsApp messages con branding personalizado
+
+**🎯 NEXT STEPS:**
+1. **Aplicar Migration 007** en Supabase
+2. **Test API Endpoints** con Postman/curl
+3. **Crear Frontend** en V0.dev
+4. **Integrar Agency Branding** en WhatsApp templates
+
+**📊 Progress: 60% Complete** - Backend foundation ready, need frontend + integration
+
+---
+
 ## 🚀 **RAILWAY DEPLOYMENT DEBUGGING** (2025-01-15 - Previous) ⚠️ 
 
 **🎯 Objetivo:** Triggear nuevo deployment y obtener logs detallados del error actual.

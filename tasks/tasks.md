@@ -519,3 +519,151 @@ python scripts/simulate_flight_change.py <trip_id> poll
 python scripts/check_conversation_logs.py
 ```
 
+---
+
+## TC-005 — Agency Portal & Multi-Tenant System
+
+**Status:** ⌛ **IN PROGRESS** (Started 2025-01-16) **Priority:** High
+
+---
+
+### 🎯 Purpose
+
+Crear portal web para agencias de viajes que les permita gestionar sus clientes, personalizar su branding, y acceder a analytics, habilitando el modelo de negocio B2B con múltiples agencias usando el mismo sistema core.
+
+---
+
+### 🛠️ Scope (MVP Portal)
+
+| #   | Task                                    | Priority | Duration | Notes                                                                          |
+| --- | --------------------------------------- | -------- | -------- | ------------------------------------------------------------------------------ |
+| 1️⃣ | **Backend API for Agencies**           | Alta     | 1 día    | ⌛ **EN PROGRESO** - Endpoints POST/GET agencies, stats, trips, branding |
+| 2️⃣ | **Agency Database Schema**              | Alta     | 1 día    | ⌛ **EN PROGRESO** - Migration para tabla agencies + agency_places |
+| 3️⃣ | **Frontend Dashboard (V0.dev)**         | Alta     | 2 días   | Login, stats, client list, branding config |
+| 4️⃣ | **Agency Registration Flow**            | Media    | 1 día    | Self-service signup con email verification |
+| 5️⃣ | **Multi-Tenant Trip Creation**          | Alta     | 1 día    | POST /trips debe incluir agency_id para segmentación |
+| 6️⃣ | **Branding in WhatsApp Messages**       | Alta     | 1 día    | Personalizar mensajes con nombre/logo de agencia |
+| 7️⃣ | **Agency Places Management**            | Media    | 1 día    | CSV upload + manual entry para places propios de agencia |
+
+---
+
+### ✅ Acceptance Criteria
+
+| ID   | Given / When / Then                                                                                            |
+| ---- | -------------------------------------------------------------------------------------------------------------- |
+| AC-1 | **Given** una agencia se registra, **when** completa el form, **then** se crea account y puede acceder dashboard |
+| AC-2 | **Given** una agencia sube un trip, **when** incluye agency_id, **then** el trip se asocia correctamente |
+| AC-3 | **Given** cliente de agencia recibe WhatsApp, **when** ve mensaje, **then** muestra branding de su agencia |
+| AC-4 | **Given** agencia accede dashboard, **when** ve stats, **then** muestra solo SUS clientes y métricas |
+| AC-5 | **Given** agencia sube CSV places, **when** procesa archivo, **then** se importan correctamente a su database |
+| AC-6 | **Given** multiple agencias usan sistema, **when** operan simultáneamente, **then** datos están completamente aislados |
+
+---
+
+### 📂 Database Schema
+
+#### `agencies` table (nueva)
+```sql
+CREATE TABLE agencies (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  name text NOT NULL,
+  email text UNIQUE NOT NULL,
+  phone text,
+  website text,
+  country text DEFAULT 'AR',
+  status text DEFAULT 'active' CHECK (status IN ('active','suspended','pending')),
+  branding jsonb DEFAULT '{}',
+  pricing_tier text DEFAULT 'startup',
+  created_at timestamptz DEFAULT now(),
+  updated_at timestamptz DEFAULT now()
+);
+```
+
+#### `trips` table (modificación)
+```sql
+-- Agregar columna agency_id
+ALTER TABLE trips ADD COLUMN agency_id uuid REFERENCES agencies(id);
+CREATE INDEX ON trips (agency_id);
+```
+
+#### `agency_places` table (ya existe)
+```sql
+-- Ya creada en migración 003, solo verificar estructura
+```
+
+---
+
+### 🔌 External Services
+
+* **Supabase** — Nuevas tablas agencies + modificación trips
+* **FastAPI** — Nuevos endpoints en /agencies
+* **V0.dev** — Frontend dashboard para agencias
+* **Twilio WhatsApp** — Branding personalizado en templates
+
+---
+
+### 🧠 Technical Notes
+
+* Todos los endpoints de agencies requieren authentication (futuro)
+* Agency_id debe ser mandatory en POST /trips (backward compatibility via default)
+* Branding se almacena como JSONB: `{"name": "Viajes Premium", "color": "#ff6b6b", "logo_url": ""}`
+* Dashboard conecta via REST API a endpoints FastAPI
+* Multi-tenancy a nivel de application, no database separation
+
+---
+
+### 🔄 Dependencies
+
+* ✅ **TC-004 completed** - Sistema optimizado y stable
+* ⌛ **Database migration** - Agregar tabla agencies
+* ⌛ **V0.dev frontend** - Portal web para agencias
+* 🔲 **Authentication system** - JWT para agencias (fase 2)
+
+---
+
+### 🧪 Testing Strategy
+
+1. **Backend API Testing**
+   ```bash
+   # Test agency creation
+   curl -X POST /agencies -H "Content-Type: application/json" -d '{"name":"Test Agency","email":"test@agency.com"}'
+   
+   # Test agency stats
+   curl /agencies/{agency_id}/stats
+   ```
+
+2. **Multi-tenant isolation**
+   - Crear 2 agencias diferentes
+   - Crear trips para cada una
+   - Verificar que stats solo muestran trips propios
+
+3. **Frontend Integration**
+   - V0.dev dashboard conectado a API
+   - Registration flow completo
+   - Branding customization working
+
+---
+
+### 📊 Success Metrics
+
+| Metric                    | Target                      |
+| ------------------------- | --------------------------- |
+| Agency registration time  | < 5 minutes                 |
+| Dashboard load time       | < 2 seconds                 |
+| Multi-tenant isolation    | 100% (zero data leaks)      |
+| Branding customization    | Working in WhatsApp messages |
+| API response time         | < 500ms average             |
+
+---
+
+### 🚀 Phase 2 Features (Post-MVP)
+
+- JWT Authentication & role-based access
+- Agency admin panel (manage multiple users per agency)
+- Advanced analytics & reporting
+- Custom domain for agency dashboard
+- White-label mobile app
+- Revenue sharing & commission tracking
+
+---
+

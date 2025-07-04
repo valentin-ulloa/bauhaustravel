@@ -4,6 +4,8 @@
 - ✅ **TC-001**: NotificationsAgent (100% Complete)
 - ✅ **TC-002**: ItineraryAgent (100% Complete) 
 - ✅ **TC-003**: ConciergeAgent Phase 2 (100% Complete)
+- ✅ **TC-004**: Agent Optimization Sprint (100% Complete)
+- ⌛ **TC-005**: Agency Portal & Multi-Tenant System (IN PROGRESS)
 - ✅ **Production Deployment**: LIVE at `https://web-production-92d8d.up.railway.app`
 - ✅ **Automatic Itinerary Generation**: COMPLETELY WORKING ✅
 

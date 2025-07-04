@@ -15,10 +15,14 @@ from .db.supabase_client import SupabaseDBClient
 from .agents.notifications_agent import NotificationsAgent
 from .agents.itinerary_agent import ItineraryAgent
 from .agents.notifications_templates import NotificationType
+from .api.agencies import router as agencies_router
 
 logger = structlog.get_logger()
 
 router = APIRouter()
+
+# Include sub-routers
+router.include_router(agencies_router, tags=["agencies"])
 
 
 @router.post("/trips")

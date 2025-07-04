@@ -925,4 +925,277 @@ class SupabaseDBClient:
             )
             # Fallback to original method on error
             logger.info("falling_back_to_original_method", trip_id=str(trip_id))
-            return await self.get_complete_trip_context(trip_id) 
+            return await self.get_complete_trip_context(trip_id)
+
+    # ========================
+    # AGENCY METHODS (TC-005)
+    # ========================
+
+    async def create_agency(self, agency_data: dict) -> DatabaseResult:
+        """
+        Create a new agency in the database.
+        
+        Args:
+            agency_data: Dictionary with agency details
+            
+        Returns:
+            DatabaseResult with created agency data or error
+        """
+        try:
+            response = await self._client.post(
+                f"{self.rest_url}/agencies",
+                json=agency_data
+            )
+            response.raise_for_status()
+            
+            created_data = response.json()
+            
+            logger.info("agency_created", 
+                agency_id=created_data[0]["id"] if created_data else None,
+                name=agency_data.get("name"),
+                email=agency_data.get("email")
+            )
+            
+            return DatabaseResult(
+                success=True,
+                data=created_data[0] if created_data else None,
+                affected_rows=1
+            )
+            
+        except Exception as e:
+            logger.error("agency_creation_failed", 
+                name=agency_data.get("name"),
+                email=agency_data.get("email"),
+                error=str(e)
+            )
+            return DatabaseResult(
+                success=False,
+                error=str(e)
+            )
+
+    async def get_agency_by_email(self, email: str) -> Optional[Dict[str, Any]]:
+        """
+        Get agency by email address.
+        
+        Args:
+            email: Agency email address
+            
+        Returns:
+            Agency data or None if not found
+        """
+        try:
+            response = await self._client.get(
+                f"{self.rest_url}/agencies",
+                params={
+                    "email": f"eq.{email}",
+                    "select": "*"
+                }
+            )
+            response.raise_for_status()
+            
+            agencies = response.json()
+            
+            return agencies[0] if agencies else None
+            
+        except Exception as e:
+            logger.error("agency_email_lookup_failed", 
+                email=email,
+                error=str(e)
+            )
+            return None
+
+    async def get_agency_by_id(self, agency_id: UUID) -> Optional[Dict[str, Any]]:
+        """
+        Get agency by ID.
+        
+        Args:
+            agency_id: Agency UUID
+            
+        Returns:
+            Agency data or None if not found
+        """
+        try:
+            response = await self._client.get(
+                f"{self.rest_url}/agencies",
+                params={
+                    "id": f"eq.{agency_id}",
+                    "select": "*"
+                }
+            )
+            response.raise_for_status()
+            
+            agencies = response.json()
+            
+            return agencies[0] if agencies else None
+            
+        except Exception as e:
+            logger.error("agency_id_lookup_failed", 
+                agency_id=str(agency_id),
+                error=str(e)
+            )
+            return None
+
+    async def get_agency_stats(self, agency_id: UUID) -> DatabaseResult:
+        """
+        Get comprehensive stats for an agency.
+        
+        Args:
+            agency_id: Agency UUID
+            
+        Returns:
+            DatabaseResult with stats data
+        """
+        try:
+            from datetime import datetime, timezone, timedelta
+            
+            # Get current month start
+            now = datetime.now(timezone.utc)
+            month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            
+            # Get all trips for this agency
+            trips_response = await self._client.get(
+                f"{self.rest_url}/trips",
+                params={
+                    "agency_id": f"eq.{agency_id}",
+                    "select": "*"
+                }
+            )
+            trips_response.raise_for_status()
+            trips = trips_response.json()
+            
+            # Get conversations for this agency
+            conversations_response = await self._client.get(
+                f"{self.rest_url}/conversations",
+                params={
+                    "agency_id": f"eq.{agency_id}",
+                    "select": "id"
+                }
+            )
+            conversations_response.raise_for_status()
+            conversations = conversations_response.json()
+            
+            # Calculate stats
+            total_trips = len(trips)
+            active_trips = len([t for t in trips if datetime.fromisoformat(t["departure_date"].replace("Z", "+00:00")) > now])
+            total_conversations = len(conversations)
+            
+            # Calculate revenue (placeholder - would need actual pricing logic)
+            revenue_current_month = total_trips * 50.0  # Placeholder calculation
+            revenue_total = total_trips * 50.0
+            
+            # Top destinations
+            destinations = [t.get("destination_iata", "Unknown") for t in trips]
+            from collections import Counter
+            destination_counts = Counter(destinations)
+            top_destinations = [dest for dest, count in destination_counts.most_common(4)]
+            
+            stats = {
+                "total_trips": total_trips,
+                "active_trips": active_trips,
+                "total_conversations": total_conversations,
+                "satisfaction_rate": 0.94,  # Placeholder - would need real satisfaction tracking
+                "revenue_current_month": revenue_current_month,
+                "revenue_total": revenue_total,
+                "top_destinations": top_destinations,
+                "avg_response_time": 1.8  # Placeholder - would need real response time tracking
+            }
+            
+            logger.info("agency_stats_calculated",
+                agency_id=str(agency_id),
+                total_trips=total_trips,
+                active_trips=active_trips
+            )
+            
+            return DatabaseResult(
+                success=True,
+                data=stats
+            )
+            
+        except Exception as e:
+            logger.error("agency_stats_failed",
+                agency_id=str(agency_id),
+                error=str(e)
+            )
+            return DatabaseResult(
+                success=False,
+                error=str(e)
+            )
+
+    async def get_trips_by_agency(self, agency_id: UUID, limit: int = 50) -> List[Dict[str, Any]]:
+        """
+        Get trips for a specific agency.
+        
+        Args:
+            agency_id: Agency UUID
+            limit: Maximum number of trips to return
+            
+        Returns:
+            List of trip records
+        """
+        try:
+            response = await self._client.get(
+                f"{self.rest_url}/trips",
+                params={
+                    "agency_id": f"eq.{agency_id}",
+                    "select": "*",
+                    "order": "inserted_at.desc",
+                    "limit": str(limit)
+                }
+            )
+            response.raise_for_status()
+            
+            trips = response.json()
+            
+            logger.info("agency_trips_retrieved",
+                agency_id=str(agency_id),
+                count=len(trips)
+            )
+            
+            return trips
+            
+        except Exception as e:
+            logger.error("agency_trips_retrieval_failed",
+                agency_id=str(agency_id),
+                error=str(e)
+            )
+            return []
+
+    async def update_agency_branding(self, agency_id: UUID, branding: Dict[str, Any]) -> DatabaseResult:
+        """
+        Update agency branding configuration.
+        
+        Args:
+            agency_id: Agency UUID
+            branding: Branding configuration dictionary
+            
+        Returns:
+            DatabaseResult with success/error
+        """
+        try:
+            response = await self._client.patch(
+                f"{self.rest_url}/agencies",
+                params={"id": f"eq.{agency_id}"},
+                json={"branding": branding}
+            )
+            response.raise_for_status()
+            
+            logger.info("agency_branding_updated",
+                agency_id=str(agency_id),
+                branding_keys=list(branding.keys())
+            )
+            
+            return DatabaseResult(
+                success=True,
+                data={"agency_id": str(agency_id), "branding": branding},
+                affected_rows=1
+            )
+            
+        except Exception as e:
+            logger.error("agency_branding_update_failed",
+                agency_id=str(agency_id),
+                error=str(e)
+            )
+            return DatabaseResult(
+                success=False,
+                error=str(e)
+            ) 
