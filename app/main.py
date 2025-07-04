@@ -249,6 +249,65 @@ async def test_concierge_timezone(trip_id: str):
     except Exception as e:
         return {"error": f"Test failed: {str(e)}"}
 
+@app.post("/admin/cleanup-test-data")
+async def cleanup_test_data():
+    """
+    ADMIN ENDPOINT: Clean up all test data to start fresh.
+    
+    This will:
+    - Delete all trips
+    - Delete all conversations
+    - Delete all itineraries
+    - Delete all notifications_log
+    - Reset to clean state
+    """
+    from app.db.supabase_client import SupabaseDBClient
+    
+    try:
+        db_client = SupabaseDBClient()
+        
+        # Count current data
+        trips_result = await db_client.get_trips_by_agency("00000000-0000-0000-0000-000000000001")
+        current_trips = len(trips_result.data) if trips_result.success else 0
+        
+        # Delete all data (CASCADE will handle related records)
+        cleanup_results = {}
+        
+        # Delete conversations
+        conversations_result = await db_client.supabase.table("conversations").delete().neq("id", "00000000-0000-0000-0000-000000000000").execute()
+        cleanup_results["conversations_deleted"] = len(conversations_result.data) if conversations_result.data else 0
+        
+        # Delete itineraries
+        itineraries_result = await db_client.supabase.table("itineraries").delete().neq("id", "00000000-0000-0000-0000-000000000000").execute()
+        cleanup_results["itineraries_deleted"] = len(itineraries_result.data) if itineraries_result.data else 0
+        
+        # Delete notifications_log
+        notifications_result = await db_client.supabase.table("notifications_log").delete().neq("id", "00000000-0000-0000-0000-000000000000").execute()
+        cleanup_results["notifications_deleted"] = len(notifications_result.data) if notifications_result.data else 0
+        
+        # Delete trips (this will cascade to related data)
+        trips_result = await db_client.supabase.table("trips").delete().neq("id", "00000000-0000-0000-0000-000000000000").execute()
+        cleanup_results["trips_deleted"] = len(trips_result.data) if trips_result.data else 0
+        
+        await db_client.close()
+        
+        return {
+            "success": True,
+            "message": "Database cleaned successfully",
+            "before_cleanup": {
+                "trips": current_trips
+            },
+            "cleanup_results": cleanup_results,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "timestamp": datetime.now().isoformat()
+        }
+
 # Utility function to access scheduler from other modules
 def get_scheduler() -> SchedulerService:
     """Get the global scheduler instance"""
