@@ -843,9 +843,9 @@ async def cleanup_test_data():
     try:
         db_client = SupabaseDBClient()
         
-        # Count current data
-        trips_result = await db_client.get_trips_by_agency("00000000-0000-0000-0000-000000000001")
-        current_trips = len(trips_result.data) if trips_result.success else 0
+        # Count current data before cleanup
+        trips_count_result = await db_client.supabase.table("trips").select("id").execute()
+        current_trips = len(trips_count_result.data) if trips_count_result.data else 0
         
         # Delete all data (CASCADE will handle related records)
         cleanup_results = {}
