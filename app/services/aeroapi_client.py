@@ -8,8 +8,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, Any, List
 from dataclasses import dataclass
 
-# TC-004: Import retry logic
-from ..utils.retry_logic import retry_async, RetryConfigs, NonRetryableError
+# Simple retry implementation
 
 logger = structlog.get_logger(__name__)
 
@@ -172,12 +171,8 @@ class AeroAPIClient:
             self._cache_status(flight_number, departure_date, None)
             return None
         
-        # TC-004: Use retry logic for robust API calls
-        return await retry_async(
-            lambda: self._make_flight_request(flight_number, departure_date),
-            config=RetryConfigs.AERO_API,
-            context=f"get_flight_status_{flight_number}"
-        )
+        # Make the API request directly
+        return await self._make_flight_request(flight_number, departure_date)
     
     async def _make_flight_request(self, flight_number: str, departure_date: str) -> Optional[FlightStatus]:
         """
@@ -236,40 +231,26 @@ class AeroAPIClient:
                     self._cache_status(flight_number, departure_date, None)
                     return None
                     
-                elif response.status_code in {400, 401, 403}:
-                    # Client errors - don't retry
-                    error_msg = f"AeroAPI client error {response.status_code}: {response.text[:200]}"
-                    logger.error("aeroapi_client_error", 
-                        flight_number=flight_number,
-                        status_code=response.status_code,
-                        response=response.text[:200]
-                    )
-                    raise NonRetryableError(error_msg)
-                    
                 else:
-                    # Server errors and rate limits - should be retried
+                    # Any other error
                     error_msg = f"AeroAPI error {response.status_code}: {response.text[:200]}"
-                    logger.error("aeroapi_retryable_error", 
+                    logger.error("aeroapi_error", 
                         flight_number=flight_number,
                         status_code=response.status_code,
                         response=response.text[:200]
                     )
-                    raise Exception(error_msg)  # Will be retried
+                    return None
                     
         except httpx.TimeoutException as e:
             logger.error("aeroapi_timeout", flight_number=flight_number)
-            raise Exception(f"AeroAPI timeout: {str(e)}")  # Will be retried
-            
-        except NonRetryableError:
-            # Re-raise non-retryable errors
-            raise
+            return None
             
         except Exception as e:
             logger.error("aeroapi_exception", 
                 flight_number=flight_number,
                 error=str(e)
             )
-            raise  # Will be retried
+            return None
     
     def _parse_flight_response(self, data: Dict[str, Any], flight_number: str) -> Optional[FlightStatus]:
         """Parse AeroAPI response into FlightStatus object"""

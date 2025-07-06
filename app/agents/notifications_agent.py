@@ -14,6 +14,7 @@ from ..db.supabase_client import SupabaseDBClient
 from ..models.database import Trip, DatabaseResult
 from .notifications_templates import NotificationType, WhatsAppTemplates, get_notification_type_for_status
 from ..services.aeroapi_client import AeroAPIClient, FlightStatus
+from ..utils.timezone_utils import is_quiet_hours_local
 
 logger = structlog.get_logger()
 
@@ -258,11 +259,6 @@ class NotificationsAgent:
         now_utc = datetime.now(timezone.utc)
         current_hour = now_utc.hour
         
-        # Import timezone utilities for local time checking
-        from ..utils.timezone_utils import is_quiet_hours_local
-        
-        # NOTE: We'll check quiet hours per trip based on origin airport timezone
-        
         try:
             # Get trips that need status polling (departure > now AND next_check_at <= now)
             trips_to_check = await self.db_client.get_trips_to_poll(now_utc)
@@ -279,8 +275,7 @@ class NotificationsAgent:
             
             logger.info("flight_polling_started", 
                 total_trips=len(trips_to_check),
-                active_trips=len(active_trips),
-                is_quiet_hours=is_quiet_hours
+                active_trips=len(active_trips)
             )
             
             for trip in active_trips:
@@ -365,8 +360,7 @@ class NotificationsAgent:
                 total_checked=len(active_trips),
                 success=success_count,
                 errors=error_count,
-                notifications_sent=notifications_sent,
-                quiet_hours=is_quiet_hours
+                notifications_sent=notifications_sent
             )
             
             return DatabaseResult(
@@ -374,8 +368,7 @@ class NotificationsAgent:
                 data={
                     "checked": len(active_trips), 
                     "updates": notifications_sent,
-                    "errors": error_count,
-                    "quiet_hours": is_quiet_hours
+                    "errors": error_count
                 },
                 affected_rows=success_count
             )
@@ -455,6 +448,10 @@ class NotificationsAgent:
             elif change_type == "status_change":
                 extra_data["new_status"] = change["new_value"]
                 extra_data["old_status"] = change["old_value"]
+            
+            # FIXED: Add gate information for boarding notifications
+            if notification_type == "boarding":
+                extra_data["gate"] = current_status.gate_origin or "Ver pantallas"
             
             # Map notification type to our enum
             notification_enum = self._map_notification_type(notification_type)

@@ -8,16 +8,10 @@ from typing import List, Optional, Dict, Any
 from uuid import UUID
 import structlog
 from openai import OpenAI
-from ..utils.production_alerts import alert_critical_error, alert_api_failure, alert_user_experience_issue
 
 from ..db.supabase_client import SupabaseDBClient
 from ..models.database import Trip, DatabaseResult, TripContext
 from .notifications_agent import NotificationsAgent
-# TC-004: Import optimization utilities
-from ..utils.retry_logic import retry_async, RetryConfigs
-from ..utils.prompt_compressor import PromptCompressor
-from ..utils.model_selector import ModelSelector, ModelType
-from ..utils.structured_logger import get_agent_logger, PerformanceTimer
 
 logger = structlog.get_logger()
 
@@ -47,9 +41,9 @@ class ConciergeAgent:
         
         self.openai_client = OpenAI(api_key=openai_api_key)
         
-        # TC-004: Structured logging
-        self.logger = get_agent_logger("concierge")
-        self.logger.info("ConciergeAgent initialized", operation="initialization")
+        logger.info("concierge_agent_initialized", 
+            openai_enabled=openai_api_key is not None
+        )
     
     async def handle_inbound_message(
         self,
@@ -409,9 +403,39 @@ Te recomiendo contactar a tu agencia de viajes para que suban el documento.
             return "Disculpa, tengo problemas para acceder a tu itinerario. ¿Podrías intentar de nuevo?"
     
     async def _handle_flight_info_request(self, trip: Trip) -> str:
-        """Handle flight information requests."""
-        # Convert UTC departure time to local airport time
+        """Handle flight information requests with real-time AeroAPI data."""
         from ..utils.timezone_utils import format_departure_time_local
+        from ..services.aeroapi_client import AeroAPIClient
+        
+        # Get real-time flight status from AeroAPI
+        aeroapi_client = AeroAPIClient()
+        try:
+            departure_date_str = trip.departure_date.strftime("%Y-%m-%d")
+            current_status = await aeroapi_client.get_flight_status(
+                trip.flight_number, 
+                departure_date_str
+            )
+            
+            # Use real-time status if available, fallback to database
+            if current_status:
+                flight_status = current_status.status
+                gate_info = f"\n🚪 Puerta: {current_status.gate_origin}" if current_status.gate_origin else ""
+                progress_info = f"\n✈️ Progreso: {current_status.progress_percent}%" if current_status.progress_percent > 0 else ""
+            else:
+                flight_status = trip.status or "Información no disponible"
+                gate_info = ""
+                progress_info = ""
+            
+        except Exception as e:
+            logger.error("aeroapi_request_failed_in_concierge", 
+                trip_id=str(trip.id),
+                error=str(e)
+            )
+            flight_status = trip.status or "Información no disponible"
+            gate_info = ""
+            progress_info = ""
+        
+        # Convert UTC departure time to local airport time
         formatted_time = format_departure_time_local(trip.departure_date, trip.origin_iata)
         
         return f"""Aquí tienes la información de tu vuelo ✈️:
@@ -419,7 +443,7 @@ Te recomiendo contactar a tu agencia de viajes para que suban el documento.
 🛫 **{trip.flight_number}**
 📍 {trip.origin_iata} → {trip.destination_iata}
 📅 {trip.departure_date.strftime("%d/%m/%Y")} a las {formatted_time}
-🎯 Estado: {trip.status}
+🎯 Estado: {flight_status}{gate_info}{progress_info}
 
 ℹ️ *Te notificaré automáticamente sobre cualquier cambio de horario, puerta o retrasos.*
 
@@ -480,15 +504,14 @@ Todo listo para tu viaje a {trip.destination_iata} con el vuelo {trip.flight_num
     
     async def _load_conversation_context(self, trip: Trip) -> Dict[str, Any]:
         """
-        Load all relevant context for AI response generation using the TC-004 optimized method.
+        Load all relevant context for AI response generation.
         """
-        # TC-004: Use optimized single-query method for 43.6% performance improvement
-        context_obj = await self.db_client.get_complete_trip_context_optimized(trip.id)
+        context_obj = await self.db_client.get_complete_trip_context(trip.id)
         return context_obj.model_dump()
     
     async def _generate_ai_response(self, context: Dict[str, Any], user_message: str) -> str:
         """
-        Generate AI response using smart model selection with loaded context.
+        Generate AI response with loaded context.
         
         Args:
             context: Complete conversation context
@@ -499,77 +522,29 @@ Todo listo para tu viaje a {trip.destination_iata} con el vuelo {trip.flight_num
         """
         trip_id = context.get('trip', {}).get('id')
         
-        # TC-004: Performance timing and structured logging
-        with PerformanceTimer(self.logger, "generate_ai_response", trip_id=str(trip_id) if trip_id else None):
-            try:
-                # TC-004: Smart model selection for cost optimization
-                selected_model, model_decision = ModelSelector.select_model(
-                    user_message=user_message,
-                    context=context,
-                    conversation_history=context.get('conversation_history', [])
-                )
-                
-                # Build comprehensive prompt
-                prompt = self._build_concierge_prompt(context, user_message)
-                
-                # TC-004: Use retry logic for robust OpenAI calls with selected model
-                response = await retry_async(
-                    lambda: self._make_openai_request(prompt, selected_model.value),
-                    config=RetryConfigs.OPENAI_API,
-                    context="concierge_ai_response"
-                )
-                
-                ai_response = response.choices[0].message.content
-                
-                # TC-004: Log cost savings and performance
-                cost_analysis = ModelSelector.estimate_cost_savings(
-                    total_tokens=response.usage.total_tokens,
-                    model_used=selected_model,
-                    baseline_model=ModelType.GPT_4O_MINI
-                )
-                
-                # Structured logging for AI response
-                self.logger.cost_tracking(
-                    service="openai",
-                    operation="chat_completion",
-                    tokens_used=response.usage.total_tokens,
-                    estimated_cost=cost_analysis['actual_cost'],
-                    trip_id=str(trip_id) if trip_id else None,
-                    model_used=selected_model.value,
-                    complexity=model_decision['complexity'],
-                    cost_savings_pct=cost_analysis['savings_percentage']
-                )
-                
-                self.logger.info("AI response generated successfully",
-                    operation="generate_ai_response",
-                    trip_id=str(trip_id) if trip_id else None,
-                    model_used=selected_model.value,
-                    tokens_used=response.usage.total_tokens,
-                    response_length=len(ai_response),
-                    complexity=model_decision['complexity'],
-                    cost_savings=model_decision['cost_savings']
-                )
-                
-                return ai_response.strip()
-                
-            except Exception as e:
-                self.logger.error("AI response generation failed",
-                    error=e,
-                    operation="generate_ai_response",
-                    trip_id=str(trip_id) if trip_id else None,
-                    error_code="AI_GENERATION_ERROR",
-                    user_message_length=len(user_message)
-                )
-                
-                # TC-004: Send production alert for AI failures
-                await alert_api_failure(
-                    api_name="OpenAI",
-                    error=e,
-                    trip_id=str(trip_id) if trip_id else None,
-                    endpoint="chat/completions"
-                )
-                
-                return "Disculpa, estoy teniendo problemas técnicos. ¿Podrías intentar de nuevo en un momento?"
+        try:
+            # Build comprehensive prompt
+            prompt = self._build_concierge_prompt_original(context, user_message)
+            
+            # Make OpenAI request
+            response = await self._make_openai_request(prompt)
+            ai_response = response.choices[0].message.content
+            
+            logger.info("ai_response_generated",
+                trip_id=str(trip_id) if trip_id else None,
+                tokens_used=response.usage.total_tokens,
+                response_length=len(ai_response)
+            )
+            
+            return ai_response.strip()
+            
+        except Exception as e:
+            logger.error("ai_response_generation_failed",
+                trip_id=str(trip_id) if trip_id else None,
+                error=str(e)
+            )
+            
+            return "Disculpa, estoy teniendo problemas técnicos. ¿Podrías intentar de nuevo en un momento?"
     
     async def _make_openai_request(self, prompt: str, model: str = "gpt-4o-mini"):
         """
@@ -593,23 +568,7 @@ Todo listo para tu viaje a {trip.destination_iata} con el vuelo {trip.flight_num
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, sync_openai_call)
     
-    def _build_concierge_prompt(self, context: Dict[str, Any], user_message: str) -> str:
-        """
-        Build comprehensive prompt for AI response generation.
-        
-        Args:
-            context: Complete conversation context
-            user_message: Current user message
-            
-        Returns:
-            Complete prompt string
-        """
-        # TC-004: Use compression if enabled
-        if PromptCompressor.should_use_compression():
-            compressed_context = PromptCompressor.compress_context(context)
-            return self._build_concierge_prompt_compressed(compressed_context, user_message)
-        
-        return self._build_concierge_prompt_original(context, user_message)
+
     
     def _build_concierge_prompt_original(self, context: Dict[str, Any], user_message: str) -> str:
         """
@@ -669,49 +628,7 @@ RESPUESTA:"""
         
         return prompt
     
-    def _build_concierge_prompt_compressed(self, context: Dict[str, Any], user_message: str) -> str:
-        """
-        Build compressed prompt for AI response generation (TC-004 optimization).
-        
-        Args:
-            context: Compressed conversation context
-            user_message: Current user message
-            
-        Returns:
-            Compressed prompt string
-        """
-        # Compressed trip info using utility
-        trip_info = PromptCompressor.compress_trip_info(context['trip'])
-        
-        # Compressed conversation history
-        history_text = ""
-        if context.get("conversation_history"):
-            compressed_history = PromptCompressor.compress_conversation_history(context["conversation_history"])
-            if compressed_history:
-                history_text = f"\nHISTORIAL:\n{compressed_history}"
-        
-        # Compressed itinerary info
-        itinerary_text = ""
-        if context.get("itinerary") and context["itinerary"].get("has_itinerary"):
-            days_count = context["itinerary"].get("days_count", 0)
-            activities = context["itinerary"].get("first_day_activities", 0)
-            itinerary_text = f"\nITINERARIO: {days_count} días, {activities} actividades día 1"
-        
-        # Compressed documents
-        docs_text = ""
-        if context.get("documents") and context["documents"]:
-            docs_text = f"\nDOCS: {', '.join(context['documents'])}"
-        
-        # Compressed instructions
-        prompt = f"""VIAJE: {trip_info}{history_text}{itinerary_text}{docs_text}
 
-USUARIO: {user_message}
-
-Responde en español, amigable, conciso (máx 200 palabras). Si preguntan por itinerario/documentos, confirma disponibilidad. Si no tienes info, sé honesto.
-
-RESPUESTA:"""
-        
-        return prompt
     
     async def _handle_media_message(self, trip_id: UUID, media_url: str, media_type: Optional[str]):
         """
