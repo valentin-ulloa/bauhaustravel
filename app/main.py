@@ -13,7 +13,7 @@ import traceback
 from .api.webhooks import router as webhooks_router
 from .router import router as trips_router
 from .api.conversations import router as conversations_router
-from .utils.production_alerts import alerter
+# Removed production_alerts import - module was deleted during refactor
 from .services.scheduler_service import SchedulerService
 
 # Load environment variables
@@ -167,14 +167,9 @@ async def health():
     
     scheduler_status = scheduler_service.get_job_status() if scheduler_service else {"status": "not_started"}
     
-    # TC-004: Include error monitoring data
-    error_summary = alerter.get_error_summary()
-    
     # Determine overall health status
     health_status = "healthy"
-    if error_summary["total_errors"] > 50:  # More than 50 errors is concerning
-        health_status = "degraded"
-    elif scheduler_status.get("status") != "running":
+    if scheduler_status.get("status") != "running":
         health_status = "warning"
     
     return {
@@ -183,8 +178,7 @@ async def health():
         "timestamp": datetime.utcnow().isoformat(),
         "python_version": sys.version,
         "environment": env_status,
-        "scheduler": scheduler_status,
-        "error_monitoring": error_summary
+        "scheduler": scheduler_status
     }
 
 @app.get("/deployment-info")
