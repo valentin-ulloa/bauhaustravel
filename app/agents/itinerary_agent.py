@@ -12,8 +12,6 @@ from ..db.supabase_client import SupabaseDBClient
 from ..models.database import Trip, DatabaseResult, AgencyPlace
 from .notifications_agent import NotificationsAgent
 from .notifications_templates import NotificationType
-# TC-004: Import retry logic
-from ..utils.retry_logic import retry_async, RetryConfigs
 from ..utils.timezone_utils import format_departure_time_local
 
 logger = structlog.get_logger()
@@ -249,12 +247,8 @@ Make it personal and exciting for {trip.client_name}!"""
             Raw response from OpenAI
         """
         try:
-            # TC-004: Use retry logic for robust OpenAI calls
-            response = await retry_async(
-                lambda: self._make_openai_request(prompt),
-                config=RetryConfigs.OPENAI_API,
-                context="itinerary_generation"
-            )
+            # Make OpenAI request directly
+            response = await self._make_openai_request(prompt)
             
             raw_response = response.choices[0].message.content
             
@@ -271,7 +265,7 @@ Make it personal and exciting for {trip.client_name}!"""
     
     async def _make_openai_request(self, prompt: str):
         """
-        TC-004: Extracted method for making OpenAI requests (for retry logic).
+        Make OpenAI API request for itinerary generation.
         """
         # Convert sync OpenAI call to async context
         import asyncio
