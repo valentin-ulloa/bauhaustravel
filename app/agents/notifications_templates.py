@@ -1,5 +1,6 @@
 """WhatsApp template definitions for Bauhaus Travel notifications."""
 
+import os
 from typing import Dict, Any
 from enum import Enum
 from datetime import datetime
@@ -52,14 +53,28 @@ class WhatsAppTemplates:
         },
         NotificationType.LANDING_WELCOME: {
             "name": "landing_welcome_es",
-            "sid": "HXb9775d224136e998bca4772d854b7169"  # TODO: Replace with real SID when template is created
+            "sid": "HXb9775d224136e998bca4772d854b7169"  
         }
     }
     
     @classmethod
     def get_template_info(cls, notification_type: NotificationType) -> Dict[str, str]:
         """Get Twilio template info (name and SID) for notification type."""
-        return cls.TEMPLATES[notification_type]
+        template_info = cls.TEMPLATES[notification_type]
+        
+        # FIXED: Validate that LANDING_WELCOME template SID is properly configured
+        if notification_type == NotificationType.LANDING_WELCOME:
+            landing_sid = template_info["sid"]
+            if not landing_sid or landing_sid == "HXb9775d224136e998bca4772d854b7169":
+                # Using default placeholder SID, check if environment variable is set
+                env_sid = os.getenv("TWILIO_TEMPLATE_LANDING_SID")
+                if not env_sid:
+                    raise ValueError(
+                        "LANDING_WELCOME template requires TWILIO_TEMPLATE_LANDING_SID environment variable. "
+                        "Please set it to your actual Twilio template SID."
+                    )
+        
+        return template_info
     
     @classmethod
     def get_template_sid(cls, notification_type: NotificationType) -> str:
@@ -82,9 +97,9 @@ class WhatsAppTemplates:
                 "1": trip_data["client_name"],        # name
                 "2": trip_data["origin_iata"],        # origin
                 "3": trip_data["departure_time"],     # departure_time
-                "4": weather_info or "buen clima",   # weather
+                "4": weather_info or MessageConfig.get_weather_text(),   # weather
                 "5": trip_data["destination_iata"],   # destination
-                "6": additional_info or "¡Buen viaje!" # additional_info
+                "6": additional_info or MessageConfig.get_good_trip_text() # additional_info
             }
         }
     
@@ -97,6 +112,7 @@ class WhatsAppTemplates:
         Variables: {{1}} name, {{2}} flight_number, {{3}} new_departure_time
         """
         from ..utils.timezone_utils import format_departure_time_human
+        from ..config.messages import MessageConfig
         
         # Format new_departure_time if it's not already human readable
         if new_departure_time and new_departure_time != "Por confirmar":
@@ -107,9 +123,9 @@ class WhatsAppTemplates:
                 else:
                     formatted_time = new_departure_time  # Already formatted
             except:
-                formatted_time = "Por confirmar"
+                formatted_time = MessageConfig.get_eta_unknown_text()
         else:
-            formatted_time = "Por confirmar"
+            formatted_time = MessageConfig.get_eta_unknown_text()
         
         template_info = cls.TEMPLATES[NotificationType.DELAYED]
         return {
@@ -242,8 +258,11 @@ class WhatsAppTemplates:
         # Use async function to get city name (with OpenAI fallback)
         destination_city = await get_city_name_from_iata(destination_iata)
         
-        # Try to get hotel address from trip metadata
-        if hotel_address == "tu alojamiento reservado" and "metadata" in trip_data:
+        # Try to get hotel address from trip metadata  
+        from ..config.messages import MessageConfig
+        default_hotel_text = MessageConfig.get_hotel_placeholder()
+        
+        if hotel_address == default_hotel_text and "metadata" in trip_data:
             metadata = trip_data.get("metadata", {})
             if isinstance(metadata, dict):
                 # Look for hotel information in metadata
@@ -251,7 +270,7 @@ class WhatsAppTemplates:
                     metadata.get("hotel_address") or 
                     metadata.get("accommodation_address") or
                     metadata.get("hotel_name") or
-                    "tu alojamiento reservado"
+                    default_hotel_text
                 )
                 hotel_address = hotel_info
         

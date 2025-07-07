@@ -212,13 +212,15 @@ class NotificationsAgent:
                     )
                     continue
                 
-                # Send notification - REMOVED DEBUG TEXT
+                # Send notification using configurable messages
+                from ..config.messages import MessageConfig
+                
                 result = await self.send_notification(
                     trip=trip,
                     notification_type=NotificationType.REMINDER_24H,
                     extra_data={
-                        "weather_info": "buen clima para volar",
-                        "additional_info": "¡Buen viaje!"  # FIXED: Removed debug text
+                        "weather_info": MessageConfig.get_weather_text(str(trip.agency_id) if hasattr(trip, 'agency_id') else None),
+                        "additional_info": MessageConfig.get_good_trip_text(str(trip.agency_id) if hasattr(trip, 'agency_id') else None)
                     }
                 )
                 
@@ -299,7 +301,7 @@ class NotificationsAgent:
                         logger.info("flight_status_not_available", 
                             trip_id=str(trip.id),
                             flight_number=trip.flight_number,
-                            departure_date=departure_date_str
+                            flight_date=departure_date_str
                         )
                         # Update next check time anyway
                         next_check = self.calculate_next_check_time(trip.departure_date, now_utc)
@@ -321,19 +323,10 @@ class NotificationsAgent:
                     
                     # Process each consolidated change and send notifications
                     for change in consolidated_changes:
-                        # Check quiet hours based on origin airport timezone
-                        is_quiet_hours = is_quiet_hours_local(now_utc, trip.origin_iata)
-                        
-                        if not is_quiet_hours:  # Only send notifications during allowed hours
-                            await self._process_flight_change(trip, change, current_status)
-                            notifications_sent += 1
-                        else:
-                            logger.info("notification_deferred_quiet_hours", 
-                                trip_id=str(trip.id),
-                                change_type=change["type"],
-                                origin_iata=trip.origin_iata,
-                                local_quiet_hours=True
-                            )
+                        # FIXED: Let _process_flight_change handle quiet hours via should_suppress_notification
+                        # This ensures only REMINDER_24H respects quiet hours, all other events send 24/7
+                        await self._process_flight_change(trip, change, current_status)
+                        notifications_sent += 1
                     
                     # Update next check time based on poll optimization rules
                     next_check = self.calculate_next_check_time(trip.departure_date, now_utc)
@@ -344,6 +337,7 @@ class NotificationsAgent:
                     logger.info("flight_status_checked", 
                         trip_id=str(trip.id),
                         flight_number=trip.flight_number,
+                        flight_date=trip.departure_date.strftime("%Y-%m-%d"),
                         status=current_status.status,
                         changes_detected=len(consolidated_changes),
                         next_check=next_check.isoformat()
@@ -353,6 +347,7 @@ class NotificationsAgent:
                     logger.error("flight_status_check_failed", 
                         trip_id=str(trip.id),
                         flight_number=trip.flight_number,
+                        flight_date=trip.departure_date.strftime("%Y-%m-%d"),
                         error=str(e)
                     )
                     error_count += 1
@@ -507,6 +502,17 @@ class NotificationsAgent:
                 # Get the final ETA to send (prioritize concrete times over TBD)
                 final_eta = self._get_prioritized_eta(change.get("new_value", ""), trip.origin_iata)
                 
+                # FIXED: Calculate eta_round for precise deduplication
+                from ..utils.timezone_utils import round_eta_to_5min
+                try:
+                    if final_eta != "Por confirmar" and "T" in final_eta:
+                        eta_dt = datetime.fromisoformat(final_eta.replace('Z', '+00:00'))
+                        eta_rounded = round_eta_to_5min(eta_dt)
+                    else:
+                        eta_rounded = "TBD"
+                except:
+                    eta_rounded = "TBD"
+                
                 # Create enhanced deduplication hash
                 dedup_data = {
                     "trip_id": str(trip.id),
@@ -517,9 +523,10 @@ class NotificationsAgent:
                     json.dumps(dedup_data, sort_keys=True).encode()
                 ).hexdigest()[:16]
                 
-                # Store the hash for deduplication
+                # Store the hash and eta_round for deduplication
                 extra_data["dedup_hash"] = dedup_hash
                 extra_data["new_departure_time"] = final_eta
+                extra_data["eta_round"] = eta_rounded
             
             # Add specific data based on change type
             if change_type == "gate_change":
@@ -532,9 +539,10 @@ class NotificationsAgent:
                 extra_data["new_status"] = change["new_value"]
                 extra_data["old_status"] = change["old_value"]
             
-            # FIXED: Add gate information for boarding notifications
+            # FIXED: Add gate information for boarding notifications using configurable text
             if notification_type == "boarding":
-                extra_data["gate"] = current_status.gate_origin or "Ver pantallas"
+                from ..config.messages import MessageConfig
+                extra_data["gate"] = current_status.gate_origin or MessageConfig.get_gate_placeholder(str(trip.agency_id) if hasattr(trip, 'agency_id') else None)
             
             # Map notification type to our enum
             notification_enum = self._map_notification_type(notification_type)
@@ -612,23 +620,38 @@ class NotificationsAgent:
                 )
                 return False
             
-            # Check if this ETA was already sent recently (even outside cooldown)
+            # FIXED: Use exact ETA comparison instead of fragile LIKE query
+            # Round ETA to 5-minute intervals for better deduplication
+            from ..utils.timezone_utils import round_eta_to_5min
+            
+            # Convert final_eta to datetime for rounding
+            try:
+                if final_eta != "Por confirmar" and "T" in final_eta:
+                    eta_dt = datetime.fromisoformat(final_eta.replace('Z', '+00:00'))
+                    eta_rounded = round_eta_to_5min(eta_dt)
+                else:
+                    eta_rounded = "TBD"
+            except:
+                eta_rounded = "TBD"
+            
+            # Check if this rounded ETA was already sent recently
             recent_eta_logs = await self.db_client.execute_query(
                 """
                 SELECT id FROM notifications_log 
                 WHERE trip_id = %s AND notification_type = 'DELAYED' 
                 AND delivery_status = 'SENT'
                 AND sent_at > %s
-                AND template_name LIKE %s
+                AND eta_round = %s
                 LIMIT 1
                 """,
-                (str(trip.id), now_utc - timedelta(hours=2), f"%{final_eta}%")
+                (str(trip.id), now_utc - timedelta(hours=2), eta_rounded)
             )
             
             if recent_eta_logs.data:
                 logger.info("delay_notification_same_eta_already_sent", 
                     trip_id=str(trip.id),
-                    eta=final_eta
+                    eta=final_eta,
+                    eta_rounded=eta_rounded
                 )
                 return False
             
@@ -653,7 +676,8 @@ class NotificationsAgent:
         Returns the most informative ETA format for notifications.
         """
         if not new_eta or new_eta in ["", "null", "None", "NULL"]:
-            return "Por confirmar"
+            from ..config.messages import MessageConfig
+            return MessageConfig.get_eta_unknown_text()
         
         try:
             # If it's an ISO datetime, format it nicely
@@ -668,13 +692,15 @@ class NotificationsAgent:
                     return dt.strftime("%d %b %H:%M UTC")
             else:
                 # Already formatted or simple string
-                return new_eta if new_eta != "null" else "Por confirmar"
+                from ..config.messages import MessageConfig
+                return new_eta if new_eta != "null" else MessageConfig.get_eta_unknown_text()
         except Exception as e:
             logger.warning("eta_formatting_failed", 
                 eta=new_eta, 
                 error=str(e)
             )
-            return new_eta if new_eta and new_eta != "null" else "Por confirmar"
+            from ..config.messages import MessageConfig
+            return new_eta if new_eta and new_eta != "null" else MessageConfig.get_eta_unknown_text()
     
     def _map_notification_type(self, notification_type: str) -> Optional[NotificationType]:
         """Map string notification type to our enum"""
@@ -740,11 +766,13 @@ class NotificationsAgent:
                             )
                             
                             # Use proper LANDING_WELCOME template
+                            from ..config.messages import MessageConfig
+                            
                             result = await self.send_notification(
                                 trip=trip,
                                 notification_type=NotificationType.LANDING_WELCOME,
                                 extra_data={
-                                    "hotel_address": "tu alojamiento reservado"  # Will be enhanced with real data
+                                    "hotel_address": MessageConfig.get_hotel_placeholder(str(trip.agency_id) if hasattr(trip, 'agency_id') else None)
                                 }
                             )
                             
@@ -902,8 +930,9 @@ class NotificationsAgent:
                 template_name=message_data["template_name"],
                 twilio_message_sid=send_result.data.get("message_sid") if send_result.success else None,
                 error_message=send_result.error if not send_result.success else None,
-                retry_count=0,  # TODO: Track actual retry count
-                idempotency_hash=idempotency_hash
+                retry_count=send_result.data.get("retry_count", 0) if send_result.data else 0,
+                idempotency_hash=idempotency_hash,
+                eta_round=extra_data.get("eta_round") if extra_data else None
             )
             
             if send_result.success:
@@ -929,7 +958,8 @@ class NotificationsAgent:
                 status="FAILED",
                 template_name=WhatsAppTemplates.get_template_info(notification_type)["name"],
                 error_message=str(e),
-                idempotency_hash=idempotency_hash
+                idempotency_hash=idempotency_hash,
+                eta_round=extra_data.get("eta_round") if extra_data else None
             )
             
             logger.error("notification_send_exception", 

@@ -84,6 +84,11 @@ class NotificationRetryService:
                         final_success=True,
                         **context
                     )
+                    # FIXED: Add retry count to result data for observability
+                    if result.data:
+                        result.data["retry_count"] = attempt
+                    else:
+                        result.data = {"retry_count": attempt}
                     return result
                 else:
                     last_error = result.error
@@ -126,7 +131,8 @@ class NotificationRetryService:
         
         return DatabaseResult(
             success=False,
-            error=f"Failed after {max_attempts} attempts: {last_error}"
+            error=f"Failed after {max_attempts} attempts: {last_error}",
+            data={"retry_count": max_attempts}
         )
     
     async def send_with_circuit_breaker(

@@ -323,7 +323,8 @@ class SupabaseDBClient:
         twilio_message_sid: Optional[str] = None,
         retry_count: int = 0,
         error_message: Optional[str] = None,
-        idempotency_hash: Optional[str] = None
+        idempotency_hash: Optional[str] = None,
+        eta_round: Optional[str] = None
     ) -> DatabaseResult:
         """
         Insert a notification log entry.
@@ -351,7 +352,8 @@ class SupabaseDBClient:
                 "twilio_message_sid": twilio_message_sid,
                 "retry_count": retry_count,
                 "error_message": error_message,
-                "idempotency_hash": idempotency_hash
+                "idempotency_hash": idempotency_hash,
+                "eta_round": eta_round
             }
             
             response = await self._client.post(
