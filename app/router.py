@@ -908,7 +908,13 @@ async def test_async_notification():
             origin_iata="JFK",
             destination_iata="LAX", 
             departure_date=datetime.now(timezone.utc),
-            status="scheduled"
+            status="scheduled",
+            metadata=None,
+            inserted_at=datetime.now(timezone.utc),
+            next_check_at=None,
+            client_description="Test trip for validation",
+            agency_id=uuid4(),
+            gate=None
         )
         
         # Test message formatting
