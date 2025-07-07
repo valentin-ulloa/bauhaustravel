@@ -322,7 +322,8 @@ class SupabaseDBClient:
         template_name: str,
         twilio_message_sid: Optional[str] = None,
         retry_count: int = 0,
-        error_message: Optional[str] = None
+        error_message: Optional[str] = None,
+        idempotency_hash: Optional[str] = None
     ) -> DatabaseResult:
         """
         Insert a notification log entry.
@@ -349,7 +350,8 @@ class SupabaseDBClient:
                 "sent_at": sent_at.isoformat(),
                 "twilio_message_sid": twilio_message_sid,
                 "retry_count": retry_count,
-                "error_message": error_message
+                "error_message": error_message,
+                "idempotency_hash": idempotency_hash
             }
             
             response = await self._client.post(
@@ -1166,36 +1168,237 @@ class SupabaseDBClient:
         Update agency branding configuration.
         
         Args:
-            agency_id: Agency UUID
-            branding: Branding configuration dictionary
+            agency_id: UUID of the agency
+            branding: Dict with branding configuration
             
         Returns:
-            DatabaseResult with success/error
+            DatabaseResult with operation status
         """
         try:
+            update_data = {"branding": branding}
+            
             response = await self._client.patch(
                 f"{self.rest_url}/agencies",
                 params={"id": f"eq.{agency_id}"},
-                json={"branding": branding}
+                json=update_data
             )
             response.raise_for_status()
             
-            logger.info("agency_branding_updated",
+            logger.info("agency_branding_updated", 
                 agency_id=str(agency_id),
                 branding_keys=list(branding.keys())
             )
             
             return DatabaseResult(
                 success=True,
-                data={"agency_id": str(agency_id), "branding": branding},
                 affected_rows=1
             )
             
         except Exception as e:
-            logger.error("agency_branding_update_failed",
+            logger.error("agency_branding_update_failed", 
                 agency_id=str(agency_id),
                 error=str(e)
             )
+            return DatabaseResult(
+                success=False,
+                error=str(e)
+            )
+
+    # Flight Status History Methods
+    
+    async def save_flight_status(
+        self,
+        trip_id: UUID,
+        flight_number: str,
+        flight_date: str,
+        status: str,
+        gate_origin: Optional[str] = None,
+        gate_destination: Optional[str] = None,
+        terminal_origin: Optional[str] = None,
+        terminal_destination: Optional[str] = None,
+        estimated_out: Optional[str] = None,
+        actual_out: Optional[str] = None,
+        estimated_in: Optional[str] = None,
+        actual_in: Optional[str] = None,
+        raw_data: Optional[Dict[str, Any]] = None,
+        source: str = "aeroapi"
+    ) -> DatabaseResult:
+        """
+        Save flight status to history table.
+        
+        Args:
+            trip_id: UUID of the trip
+            flight_number: Flight number
+            flight_date: Flight date (YYYY-MM-DD)
+            status: Flight status
+            gate_origin: Origin gate
+            gate_destination: Destination gate
+            terminal_origin: Origin terminal
+            terminal_destination: Destination terminal
+            estimated_out: Estimated departure time
+            actual_out: Actual departure time
+            estimated_in: Estimated arrival time
+            actual_in: Actual arrival time
+            raw_data: Raw API response data
+            source: Data source (aeroapi, manual, webhook)
+            
+        Returns:
+            DatabaseResult with operation status
+        """
+        try:
+            history_data = {
+                "trip_id": str(trip_id),
+                "flight_number": flight_number,
+                "flight_date": flight_date,
+                "status": status,
+                "gate_origin": gate_origin,
+                "gate_destination": gate_destination,
+                "terminal_origin": terminal_origin,
+                "terminal_destination": terminal_destination,
+                "estimated_out": estimated_out,
+                "actual_out": actual_out,
+                "estimated_in": estimated_in,
+                "actual_in": actual_in,
+                "raw_data": raw_data,
+                "source": source
+            }
+            
+            response = await self._client.post(
+                f"{self.rest_url}/flight_status_history",
+                json=history_data
+            )
+            response.raise_for_status()
+            
+            created_record = response.json()
+            
+            logger.info("flight_status_saved", 
+                trip_id=str(trip_id),
+                flight_number=flight_number,
+                status=status,
+                gate_origin=gate_origin
+            )
+            
+            return DatabaseResult(
+                success=True,
+                data=created_record[0] if created_record else None,
+                affected_rows=1
+            )
+            
+        except Exception as e:
+            logger.error("flight_status_save_failed", 
+                trip_id=str(trip_id),
+                flight_number=flight_number,
+                error=str(e)
+            )
+            return DatabaseResult(
+                success=False,
+                error=str(e)
+            )
+    
+    async def get_latest_flight_status(self, trip_id: UUID) -> Optional[Dict[str, Any]]:
+        """
+        Get the most recent flight status for a trip.
+        
+        Args:
+            trip_id: UUID of the trip
+            
+        Returns:
+            Dict with latest flight status or None
+        """
+        try:
+            response = await self._client.get(
+                f"{self.rest_url}/flight_status_history",
+                params={
+                    "trip_id": f"eq.{trip_id}",
+                    "order": "recorded_at.desc",
+                    "limit": "1",
+                    "select": "*"
+                }
+            )
+            response.raise_for_status()
+            
+            history_data = response.json()
+            
+            if history_data:
+                logger.info("latest_flight_status_retrieved", 
+                    trip_id=str(trip_id),
+                    status=history_data[0]["status"]
+                )
+                return history_data[0]
+            else:
+                logger.info("no_flight_status_history", trip_id=str(trip_id))
+                return None
+            
+        except Exception as e:
+            logger.error("latest_flight_status_failed", 
+                trip_id=str(trip_id),
+                error=str(e)
+            )
+            return None
+    
+    async def get_trips_after_departure(self, departure_threshold: datetime) -> List[Trip]:
+        """
+        Get trips that departed after the given threshold (for landing detection).
+        
+        Args:
+            departure_threshold: Datetime threshold for departure
+            
+        Returns:
+            List of Trip objects
+        """
+        try:
+            threshold_str = departure_threshold.isoformat()
+            
+            response = await self._client.get(
+                f"{self.rest_url}/trips",
+                params={
+                    "departure_date": f"gte.{threshold_str}",
+                    "select": "*"
+                }
+            )
+            response.raise_for_status()
+            
+            trips_data = response.json()
+            trips = [Trip(**trip_data) for trip_data in trips_data]
+            
+            logger.info("trips_after_departure_retrieved", 
+                count=len(trips),
+                threshold=threshold_str
+            )
+            
+            return trips
+            
+        except Exception as e:
+            logger.error("trips_after_departure_failed", error=str(e))
+            return []
+    
+    async def execute_query(self, query: str, params: tuple = ()) -> DatabaseResult:
+        """
+        Execute a raw SQL query (for complex operations).
+        
+        Args:
+            query: SQL query string
+            params: Query parameters
+            
+        Returns:
+            DatabaseResult with query results
+        """
+        try:
+            # Note: This is a simplified implementation
+            # In production, you might want to use Supabase's RPC functionality
+            # or a proper SQL client for complex queries
+            
+            logger.warning("execute_query_not_implemented", 
+                query=query[:100] + "..." if len(query) > 100 else query
+            )
+            
+            return DatabaseResult(
+                success=False,
+                error="Raw SQL queries not implemented in current Supabase client"
+            )
+            
+        except Exception as e:
+            logger.error("execute_query_failed", error=str(e))
             return DatabaseResult(
                 success=False,
                 error=str(e)

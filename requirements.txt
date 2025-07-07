@@ -2,33 +2,36 @@
 # Updated for Railway deployment compatibility
 
 # Core Framework
-fastapi>=0.100.0,<1.0.0
-uvicorn[standard]>=0.20.0,<1.0.0
+fastapi==0.104.1
+uvicorn==0.24.0
 
 # Async HTTP Client
-httpx>=0.24.0,<1.0.0
+httpx==0.25.2
 
 # Database & Validation
 pydantic>=2.0.0,<3.0.0
 python-dotenv>=1.0.0
 
 # Structured Logging
-structlog>=23.0.0
+structlog==23.2.0
 
 # Task Scheduling (for NotificationsAgent)
-apscheduler>=3.10.0
+APScheduler==3.10.4
 
 # External API Integrations
-twilio>=8.0.0
-openai>=1.0.0
-python-multipart>=0.0.6
+twilio==8.10.1
+openai==1.3.5
+python-multipart==0.0.6
 
 # Date/Time handling for Python < 3.9
 zoneinfo; python_version < "3.9"
 
 # Timezone utilities
-pytz>=2024.1
+pytz==2023.3
 
 # Testing Dependencies
 pytest>=7.4.0
 pytest-asyncio>=0.21.0
+
+# Supabase
+supabase==2.0.2
