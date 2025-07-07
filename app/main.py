@@ -13,6 +13,7 @@ import traceback
 from .api.webhooks import router as webhooks_router
 from .router import router as trips_router
 from .api.conversations import router as conversations_router
+from .api.trips import router as test_trips_router
 # Removed production_alerts import - module was deleted during refactor
 from .services.scheduler_service import SchedulerService
 
@@ -132,6 +133,7 @@ app.add_middleware(
 app.include_router(webhooks_router)
 app.include_router(trips_router)
 app.include_router(conversations_router, prefix="/conversations", tags=["conversations"])
+app.include_router(test_trips_router, prefix="/trips", tags=["trips"])
 
 
 @app.get("/")

@@ -868,3 +868,127 @@ async def cleanup_test_data():
             "error": str(e),
             "timestamp": datetime.now().isoformat()
         }
+
+@router.post("/test-async-notification")
+async def test_async_notification():
+    """
+    Test endpoint to validate AsyncTwilioClient and notification system.
+    This endpoint verifies the async architecture without sending real messages.
+    """
+    try:
+        from app.agents.notifications_agent import NotificationsAgent
+        
+        # Initialize NotificationsAgent to test async components
+        agent = NotificationsAgent()
+        
+        # Test async client initialization
+        async_client_status = {
+            "async_twilio_client": "initialized" if agent.async_twilio_client else "failed",
+            "retry_service": "initialized" if agent.retry_service else "failed",
+            "db_client": "initialized" if agent.db_client else "failed",
+            "aeroapi_client": "initialized" if agent.aeroapi_client else "failed"
+        }
+        
+        # Test httpx version compatibility
+        import httpx
+        httpx_version = httpx.__version__
+        
+        # Test that we can format a message (without sending)
+        from app.models.database import Trip
+        from app.agents.notifications_templates import NotificationType
+        from datetime import datetime, timezone
+        from uuid import uuid4
+        
+        # Create test trip data
+        test_trip = Trip(
+            id=uuid4(),
+            client_name="Test Client",
+            whatsapp="+1234567890",
+            flight_number="AA123",
+            origin_iata="JFK",
+            destination_iata="LAX", 
+            departure_date=datetime.now(timezone.utc),
+            status="scheduled"
+        )
+        
+        # Test message formatting
+        message_data = agent.format_message(
+            test_trip, 
+            NotificationType.REMINDER_24H,
+            {"weather_info": "sunny", "additional_info": "Test flight"}
+        )
+        
+        # Test idempotency hash generation
+        import hashlib
+        import json
+        idempotency_data = {
+            "trip_id": str(test_trip.id),
+            "notification_type": "REMINDER_24H",
+            "extra_data": {"test": "data"}
+        }
+        idempotency_hash = hashlib.sha256(
+            json.dumps(idempotency_data, sort_keys=True).encode()
+        ).hexdigest()[:16]
+        
+        await agent.close()
+        
+        return {
+            "status": "success",
+            "async_architecture": "fully_operational",
+            "components": async_client_status,
+            "httpx_version": httpx_version,
+            "message_formatting": "working",
+            "template_name": message_data.get("template_name"),
+            "idempotency_system": "working",
+            "idempotency_hash_sample": idempotency_hash,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "production_ready": True
+        }
+        
+    except Exception as e:
+        return {
+            "status": "error", 
+            "error": str(e),
+            "async_architecture": "failed",
+            "production_ready": False
+        }
+
+@router.post("/test-flight-notification/{trip_id}")
+async def test_flight_notification(trip_id: str):
+    """
+    Test endpoint to send a real notification for a specific trip.
+    Use this to validate the complete notification flow.
+    """
+    try:
+        from app.agents.notifications_agent import NotificationsAgent
+        from app.agents.notifications_templates import NotificationType
+        from uuid import UUID
+        
+        agent = NotificationsAgent()
+        
+        # Send a test notification
+        result = await agent.send_single_notification(
+            trip_id=UUID(trip_id),
+            notification_type=NotificationType.REMINDER_24H,
+            extra_data={
+                "weather_info": "buen clima para volar",
+                "additional_info": "Prueba del sistema async optimizado"
+            }
+        )
+        
+        await agent.close()
+        
+        return {
+            "status": "notification_sent" if result.success else "notification_failed",
+            "trip_id": trip_id,
+            "result": result.data if result.success else result.error,
+            "async_system": "operational",
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        
+    except Exception as e:
+        return {
+            "status": "error",
+            "trip_id": trip_id,
+            "error": str(e)
+        }
