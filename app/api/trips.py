@@ -17,27 +17,28 @@ async def create_test_trip(
     """
     try:
         from app.db.supabase_client import SupabaseDBClient
+        from app.models.database import TripCreate
         from datetime import datetime, timezone, timedelta
+        from uuid import UUID
         
         db_client = SupabaseDBClient()
         
         # Create departure time based on hours_from_now
         departure_date = datetime.now(timezone.utc) + timedelta(hours=hours_from_now)
         
-        # Create trip
-        trip_data = {
-            "client_name": client_name,
-            "whatsapp": whatsapp,
-            "flight_number": flight_number,
-            "origin_iata": origin_iata,
-            "destination_iata": destination_iata,
-            "departure_date": departure_date.isoformat(),
-            "status": "scheduled",
-            "agency_id": "00000000-0000-0000-0000-000000000001",  # Default test agency
-            "client_description": f"Test trip created for system validation - {departure_date.strftime('%Y-%m-%d %H:%M')} UTC"
-        }
+        # Create TripCreate object
+        trip_create = TripCreate(
+            client_name=client_name,
+            whatsapp=whatsapp,
+            flight_number=flight_number,
+            origin_iata=origin_iata,
+            destination_iata=destination_iata,
+            departure_date=departure_date,
+            agency_id=UUID("00000000-0000-0000-0000-000000000001"),  # Default test agency
+            client_description=f"Test trip created for system validation - {departure_date.strftime('%Y-%m-%d %H:%M')} UTC"
+        )
         
-        result = await db_client.create_trip(trip_data)
+        result = await db_client.create_trip(trip_create)
         
         if result.success:
             trip_id = result.data.get("id")
@@ -45,7 +46,7 @@ async def create_test_trip(
                 "status": "success",
                 "message": "Test trip created successfully", 
                 "trip_id": trip_id,
-                "trip_data": trip_data,
+                "trip_data": result.data,
                 "departure_in_hours": hours_from_now,
                 "next_steps": f"Use POST /test-flight-notification/{trip_id} to test notifications"
             }
