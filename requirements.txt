@@ -5,8 +5,8 @@
 fastapi==0.104.1
 uvicorn==0.24.0
 
-# Async HTTP Client
-httpx==0.25.2
+# Async HTTP Client - Compatible version
+httpx>=0.24.0,<0.25.0
 
 # Database & Validation
 pydantic>=2.0.0,<3.0.0
@@ -20,7 +20,7 @@ APScheduler==3.10.4
 
 # External API Integrations
 twilio==8.10.1
-openai==1.3.5
+openai>=1.3.0,<2.0.0
 python-multipart==0.0.6
 
 # Date/Time handling for Python < 3.9
@@ -34,4 +34,4 @@ pytest>=7.4.0
 pytest-asyncio>=0.21.0
 
 # Supabase
-supabase==2.0.2
+supabase>=2.0.0,<3.0.0
