@@ -199,16 +199,16 @@ class WhatsAppTemplates:
         Format reservation confirmation notification.
         
         Template: confirmacion_reserva (HX01a541412cda42dd91bff6995fdc3f4a)
-        Variables: {{1}} name, {{2}} flight_number, {{3}} origin, {{4}} destination, {{5}} departure_date (formatted as hh:mm hs)
+        Variables: {{1}} name, {{2}} flight_number, {{3}} origin, {{4}} destination, {{5}} departure_date (formatted with day of week)
         """
-        from ..utils.timezone_utils import format_departure_time_local
+        from ..utils.timezone_utils import format_departure_time_human
         
         # Parse departure date (comes from DB as UTC ISO string)
-        departure_datetime = datetime.fromisoformat(trip_data["departure_date"])
+        departure_datetime = datetime.fromisoformat(trip_data["departure_date"].replace('Z', '+00:00'))
         
-        # Convert UTC to local airport time for display
+        # FIXED: Use format_departure_time_human to include day of week (Lun, Mar, etc.)
         origin_iata = trip_data["origin_iata"]
-        formatted_time = format_departure_time_local(departure_datetime, origin_iata)
+        formatted_time = format_departure_time_human(departure_datetime, origin_iata)
         
         template_info = cls.TEMPLATES[NotificationType.RESERVATION_CONFIRMATION]
         return {
@@ -219,7 +219,7 @@ class WhatsAppTemplates:
                 "2": trip_data["flight_number"],     # flight_number
                 "3": trip_data["origin_iata"],       # origin
                 "4": trip_data["destination_iata"],  # destination
-                "5": formatted_time                  # departure_date (formatted as hh:mm hs in local time)
+                "5": formatted_time                  # departure_date (formatted with day of week: "Lun 8 Jul 02:30 hs (EZE)")
             }
         }
     

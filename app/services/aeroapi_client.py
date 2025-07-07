@@ -326,12 +326,16 @@ class AeroAPIClient:
         
         # Status change (Scheduled -> Delayed, etc.)
         if current_status.status != previous_status.status:
-            changes.append({
-                "type": "status_change",
-                "old_value": previous_status.status,
-                "new_value": current_status.status,
-                "notification_type": self._map_status_to_notification(current_status.status)
-            })
+            notification_type = self._map_status_to_notification(current_status.status)
+            
+            # Only create change event if notification is needed
+            if notification_type != "no_notification":
+                changes.append({
+                    "type": "status_change",
+                    "old_value": previous_status.status,
+                    "new_value": current_status.status,
+                    "notification_type": notification_type
+                })
         
         # Gate change
         if (current_status.gate_origin and 
@@ -343,15 +347,24 @@ class AeroAPIClient:
                 "notification_type": "gate_change"
             })
         
-        # Departure time change (estimated_out)
+        # Departure time change (estimated_out) - INTELLIGENT DELAY DETECTION
         if (current_status.estimated_out and 
             current_status.estimated_out != previous_status.estimated_out):
-            changes.append({
-                "type": "departure_time_change",
-                "old_value": previous_status.estimated_out,
-                "new_value": current_status.estimated_out,
-                "notification_type": "delayed"  # Usually indicates delay
-            })
+            
+            # Only trigger delayed notification if there's an ACTUAL delay
+            is_actual_delay = self._is_actual_delay(
+                previous_estimated=previous_status.estimated_out,
+                current_estimated=current_status.estimated_out,
+                current_status=current_status.status
+            )
+            
+            if is_actual_delay:
+                changes.append({
+                    "type": "departure_time_change",
+                    "old_value": previous_status.estimated_out,
+                    "new_value": current_status.estimated_out,
+                    "notification_type": "delayed"
+                })
         
         # Cancellation
         if current_status.cancelled and not previous_status.cancelled:
@@ -373,19 +386,137 @@ class AeroAPIClient:
         
         return changes
     
+    def _is_actual_delay(
+        self, 
+        previous_estimated: Optional[str], 
+        current_estimated: str,
+        current_status: str
+    ) -> bool:
+        """
+        Determine if estimated_out change represents an actual delay.
+        
+        Business rules:
+        1. If previous was NULL and current has time → Initial scheduling (NOT a delay)
+        2. If current time > previous time → Potential delay 
+        3. If status explicitly says "Delayed" → Confirm it's a delay
+        4. If current time < previous time → Early departure (NOT a delay)
+        
+        Args:
+            previous_estimated: Previous estimated_out (might be None)
+            current_estimated: Current estimated_out 
+            current_status: Current flight status
+            
+        Returns:
+            True if this represents an actual delay worth notifying
+        """
+        try:
+            # Rule 1: NULL → Time is initial scheduling, not a delay
+            if not previous_estimated:
+                logger.info("estimated_out_initial_scheduling", 
+                    current_estimated=current_estimated,
+                    is_delay=False
+                )
+                return False
+            
+            # Parse times for comparison
+            from datetime import datetime
+            
+            previous_dt = datetime.fromisoformat(previous_estimated.replace('Z', '+00:00'))
+            current_dt = datetime.fromisoformat(current_estimated.replace('Z', '+00:00'))
+            
+            time_difference_minutes = (current_dt - previous_dt).total_seconds() / 60
+            
+            # Rule 2: Current time earlier than previous → Early departure (not delay)
+            if time_difference_minutes < 0:
+                logger.info("estimated_out_early_departure", 
+                    time_difference_minutes=time_difference_minutes,
+                    is_delay=False
+                )
+                return False
+            
+            # Rule 3: Minimal change (< 5 minutes) → Likely technical update, not real delay
+            if time_difference_minutes < 5:
+                logger.info("estimated_out_minimal_change", 
+                    time_difference_minutes=time_difference_minutes,
+                    is_delay=False
+                )
+                return False
+            
+            # Rule 4: Status explicitly mentions delay
+            status_lower = current_status.lower()
+            if "delay" in status_lower or "late" in status_lower:
+                logger.info("estimated_out_confirmed_delay_by_status", 
+                    time_difference_minutes=time_difference_minutes,
+                    status=current_status,
+                    is_delay=True
+                )
+                return True
+            
+            # Rule 5: Significant time increase (>= 15 minutes) without explicit delay status
+            # This catches delays where status hasn't updated yet
+            if time_difference_minutes >= 15:
+                logger.info("estimated_out_significant_delay_detected", 
+                    time_difference_minutes=time_difference_minutes,
+                    status=current_status,
+                    is_delay=True
+                )
+                return True
+            
+            # Rule 6: Moderate delay (5-15 minutes) but status still "Scheduled" 
+            # → Wait for status confirmation to avoid false alarms
+            logger.info("estimated_out_moderate_change_waiting_status_confirmation", 
+                time_difference_minutes=time_difference_minutes,
+                status=current_status,
+                is_delay=False
+            )
+            return False
+            
+        except Exception as e:
+            logger.error("delay_detection_failed", 
+                previous_estimated=previous_estimated,
+                current_estimated=current_estimated,
+                error=str(e)
+            )
+            # On error, be conservative - don't trigger false alarms
+            return False
+    
     def _map_status_to_notification(self, status: str) -> str:
-        """Map AeroAPI status to our notification type"""
+        """
+        Map AeroAPI status to our notification type.
+        
+        CRITICAL: Only return notification types that should trigger alerts.
+        Normal statuses like 'Scheduled', 'Taxiing', 'En Route' should NOT trigger notifications.
+        """
         status_lower = status.lower()
         
+        # Explicit delay/late indicators
         if "delay" in status_lower or "late" in status_lower:
             return "delayed"
+        
+        # Cancellation indicators  
         elif "cancel" in status_lower:
             return "cancelled"
+        
+        # Boarding indicators
         elif "board" in status_lower:
             return "boarding"
-        elif "departed" in status_lower or "airborne" in status_lower:
+        
+        # Departure indicators (informational, not alertable)
+        elif "departed" in status_lower or "airborne" in status_lower or "en route" in status_lower:
             return "departed"
+        
+        # Landing indicators (for welcome messages)
         elif "arrived" in status_lower or "landed" in status_lower:
             return "landed"
+        
+        # NORMAL STATUSES - NO NOTIFICATION NEEDED
+        elif status_lower in ["scheduled", "on time", "taxiing", "pushback", "unknown"]:
+            return "no_notification"
+        
+        # Unknown status - log but don't spam users
         else:
-            return "delayed"  # Default fallback 
+            logger.warning("unknown_flight_status_detected", 
+                status=status,
+                mapped_to="no_notification"
+            )
+            return "no_notification" 
