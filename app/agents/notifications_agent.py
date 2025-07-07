@@ -15,7 +15,7 @@ from .notifications_templates import NotificationType, WhatsAppTemplates, get_no
 from ..services.aeroapi_client import AeroAPIClient, FlightStatus
 from ..services.async_twilio_client import AsyncTwilioClient
 from ..services.notification_retry_service import NotificationRetryService
-from ..utils.timezone_utils import is_quiet_hours_local, format_departure_time_local
+from ..utils.timezone_utils import is_quiet_hours_local, format_departure_time_local, should_suppress_notification, format_departure_time_human, round_eta_to_5min
 
 logger = structlog.get_logger()
 
@@ -169,7 +169,7 @@ class NotificationsAgent:
         
         Business rules:
         - Send 24 hours before departure
-        - Only between 09:00-20:00 local time
+        - Only between 09:00-20:00 local time (CRITICAL: Only reminders respect quiet hours)
         - If outside window, schedule for 09:00 same day
         """
         logger.info("scheduling_24h_reminders")
@@ -202,20 +202,24 @@ class NotificationsAgent:
                     logger.info("24h_reminder_already_sent", trip_id=str(trip.id))
                     continue
                 
-                # Check time window using origin airport timezone
-                is_quiet_hours = is_quiet_hours_local(now_utc, trip.origin_iata)
-                if is_quiet_hours:
-                    logger.info("24h_reminder_outside_window", 
+                # FIXED: Use new quiet hours logic - only suppress REMINDER_24H
+                should_suppress = should_suppress_notification("REMINDER_24H", now_utc, trip.origin_iata)
+                if should_suppress:
+                    logger.info("24h_reminder_suppressed_quiet_hours", 
                         trip_id=str(trip.id),
                         origin_iata=trip.origin_iata,
                         local_quiet_hours=True
                     )
                     continue
                 
-                # Send notification
+                # Send notification - REMOVED DEBUG TEXT
                 result = await self.send_notification(
                     trip=trip,
-                    notification_type=NotificationType.REMINDER_24H
+                    notification_type=NotificationType.REMINDER_24H,
+                    extra_data={
+                        "weather_info": "buen clima para volar",
+                        "additional_info": "¡Buen viaje!"  # FIXED: Removed debug text
+                    }
                 )
                 
                 if result.success:
@@ -466,10 +470,23 @@ class NotificationsAgent:
         change: Dict[str, Any], 
         current_status: FlightStatus
     ):
-        """Process a detected flight change and send appropriate notification"""
+        """Process a detected flight change and send appropriate notification with deduplication"""
         try:
             change_type = change["type"]
             notification_type = change["notification_type"]
+            
+            # CRITICAL BUSINESS RULE: Only REMINDER_24H respects quiet hours
+            # All other events (DELAYED, CANCELLED, BOARDING, GATE_CHANGE) send 24/7
+            now_utc = datetime.now(timezone.utc)
+            should_suppress = should_suppress_notification(notification_type, now_utc, trip.origin_iata)
+            
+            if should_suppress:
+                logger.info("notification_suppressed_quiet_hours", 
+                    trip_id=str(trip.id),
+                    notification_type=notification_type,
+                    origin_iata=trip.origin_iata
+                )
+                return
             
             # Prepare extra data for template formatting
             extra_data = {
@@ -477,6 +494,61 @@ class NotificationsAgent:
                 "new_value": change.get("new_value"),
                 "change_type": change_type
             }
+            
+            # DEDUPLICATION FOR DELAYED NOTIFICATIONS
+            if notification_type == "delayed":
+                # Round ETA to 5-minute intervals for deduplication
+                new_eta_str = change.get("new_value", "")
+                if new_eta_str:
+                    try:
+                        if "T" in new_eta_str:  # ISO format
+                            new_eta_dt = datetime.fromisoformat(new_eta_str.replace('Z', '+00:00'))
+                            rounded_eta = round_eta_to_5min(new_eta_dt)
+                        else:
+                            rounded_eta = "TBD"
+                    except:
+                        rounded_eta = "TBD"
+                else:
+                    rounded_eta = "TBD"
+                
+                # Create deduplication hash
+                dedup_data = {
+                    "trip_id": str(trip.id),
+                    "type": "DELAYED",
+                    "eta_rounded": rounded_eta
+                }
+                dedup_hash = hashlib.sha256(
+                    json.dumps(dedup_data, sort_keys=True).encode()
+                ).hexdigest()[:16]
+                
+                # Check if this exact delay was already sent
+                try:
+                    existing_delay = await self.db_client.execute_query(
+                        """
+                        SELECT id FROM notifications_log 
+                        WHERE trip_id = %s AND notification_type = 'DELAYED' 
+                        AND idempotency_hash = %s AND delivery_status = 'SENT'
+                        AND sent_at > NOW() - INTERVAL '2 hours'
+                        LIMIT 1
+                        """,
+                        (str(trip.id), dedup_hash)
+                    )
+                    
+                    if existing_delay.data:
+                        logger.info("delayed_notification_deduplicated", 
+                            trip_id=str(trip.id),
+                            eta_rounded=rounded_eta,
+                            dedup_hash=dedup_hash
+                        )
+                        return
+                except Exception as e:
+                    logger.warning("delay_deduplication_check_failed", 
+                        trip_id=str(trip.id),
+                        error=str(e)
+                    )
+                
+                # Store rounded ETA for deduplication in extra_data
+                extra_data["dedup_hash"] = dedup_hash
             
             # Add specific data based on change type
             if change_type == "gate_change":
@@ -533,6 +605,7 @@ class NotificationsAgent:
             "cancelled": NotificationType.CANCELLED,
             "boarding": NotificationType.BOARDING,
             "gate_change": NotificationType.GATE_CHANGE,
+            "landing": NotificationType.LANDING_WELCOME,  # ADDED: Landing support
             # Add more mappings as needed
         }
         return mapping.get(notification_type)
@@ -582,23 +655,32 @@ class NotificationsAgent:
                         
                         if not is_quiet_hours:
                             # Send landing welcome notification
-                            # Note: We need to add LANDING_WELCOME to NotificationType enum
                             logger.info("landing_detected_sending_welcome",
                                 trip_id=str(trip.id),
                                 flight_number=trip.flight_number,
                                 status=current_status.status
                             )
                             
-                            # For now, we'll use a simple text message until we create the template
-                            welcome_message = f"¡Bienvenido a {trip.destination_iata}! 🛬\n\nEsperamos que hayas tenido un excelente vuelo. ¡Disfruta tu estadía!"
-                            
-                            from .notifications_agent import NotificationsAgent
-                            await self.send_free_text(
-                                whatsapp_number=trip.whatsapp,
-                                message=welcome_message
+                            # Use proper LANDING_WELCOME template
+                            result = await self.send_notification(
+                                trip=trip,
+                                notification_type=NotificationType.LANDING_WELCOME,
+                                extra_data={
+                                    "hotel_address": "tu alojamiento reservado"  # Will be enhanced with real data
+                                }
                             )
                             
-                            landed_count += 1
+                            if result.success:
+                                landed_count += 1
+                                logger.info("landing_welcome_sent",
+                                    trip_id=str(trip.id),
+                                    message_sid=result.data.get("message_sid") if result.data else None
+                                )
+                            else:
+                                logger.error("landing_welcome_failed",
+                                    trip_id=str(trip.id),
+                                    error=result.error
+                                )
                         else:
                             logger.info("landing_notification_deferred_quiet_hours", 
                                 trip_id=str(trip.id),
@@ -648,15 +730,19 @@ class NotificationsAgent:
         """
         notification_type_db = notification_type.value.upper()
         
-        # Generate idempotency hash to prevent duplicates
-        idempotency_data = {
-            "trip_id": str(trip.id),
-            "notification_type": notification_type_db,
-            "extra_data": extra_data or {}
-        }
-        idempotency_hash = hashlib.sha256(
-            json.dumps(idempotency_data, sort_keys=True).encode()
-        ).hexdigest()[:16]
+        # ENHANCED: Use dedup_hash if provided for DELAYED notifications
+        if extra_data and "dedup_hash" in extra_data:
+            idempotency_hash = extra_data["dedup_hash"]
+        else:
+            # Generate standard idempotency hash
+            idempotency_data = {
+                "trip_id": str(trip.id),
+                "notification_type": notification_type_db,
+                "extra_data": {k: v for k, v in (extra_data or {}).items() if k != "dedup_hash"}
+            }
+            idempotency_hash = hashlib.sha256(
+                json.dumps(idempotency_data, sort_keys=True).encode()
+            ).hexdigest()[:16]
         
         # Check if notification already sent
         try:
@@ -686,7 +772,7 @@ class NotificationsAgent:
         
         try:
             # Format message using templates
-            message_data = self.format_message(trip, notification_type, extra_data)
+            message_data = await self.format_message(trip, notification_type, extra_data)
             
             logger.info("sending_whatsapp_notification", 
                 trip_id=str(trip.id),
@@ -774,7 +860,7 @@ class NotificationsAgent:
             )
             return DatabaseResult(success=False, error=str(e))
     
-    def format_message(
+    async def format_message(
         self, 
         trip: Trip, 
         notification_type: NotificationType,
@@ -791,9 +877,8 @@ class NotificationsAgent:
         Returns:
             Dict with template_sid, template_name and template_variables
         """
-        # Format departure_date to departure_time for templates
-        departure_datetime = trip.departure_date
-        formatted_departure_time = format_departure_time_local(departure_datetime, trip.origin_iata)
+        # FIXED: Use human-readable time formatting
+        formatted_departure_time = format_departure_time_human(trip.departure_date, trip.origin_iata)
         
         trip_data = {
             "client_name": trip.client_name,
@@ -801,8 +886,9 @@ class NotificationsAgent:
             "origin_iata": trip.origin_iata,
             "destination_iata": trip.destination_iata,
             "departure_date": trip.departure_date.isoformat(),
-            "departure_time": formatted_departure_time,  # Add formatted time for templates
-            "status": trip.status
+            "departure_time": formatted_departure_time,  # Human readable format
+            "status": trip.status,
+            "metadata": trip.metadata  # Include metadata for hotel info
         }
         
         if extra_data:
@@ -833,6 +919,10 @@ class NotificationsAgent:
         
         elif notification_type == NotificationType.ITINERARY_READY:
             return WhatsAppTemplates.format_itinerary_ready(trip_data)
+        
+        elif notification_type == NotificationType.LANDING_WELCOME:
+            hotel_address = extra_data.get("hotel_address", "tu alojamiento reservado") if extra_data else "tu alojamiento reservado"
+            return await WhatsAppTemplates.format_landing_welcome_async(trip_data, hotel_address)
         
         else:
             raise ValueError(f"Unknown notification type: {notification_type}")

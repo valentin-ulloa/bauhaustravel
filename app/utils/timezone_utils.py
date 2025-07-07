@@ -182,4 +182,188 @@ def get_timezone_info(airport_iata: str) -> Dict[str, str]:
             "airport": airport_iata.upper(),
             "timezone_name": "NOT_FOUND",
             "error": "Airport timezone not configured"
-        } 
+        }
+
+
+def should_suppress_notification(
+    event_type: str, 
+    utc_datetime: datetime, 
+    airport_iata: str
+) -> bool:
+    """
+    Determine if notification should be suppressed based on quiet hours.
+    
+    CRITICAL BUSINESS RULE:
+    - Only REMINDER_24H respects quiet hours (22:00-07:00)
+    - All other events (DELAYED, CANCELLED, BOARDING, GATE_CHANGE) send 24/7
+    
+    Args:
+        event_type: Notification type (REMINDER_24H, DELAYED, etc.)
+        utc_datetime: Current time in UTC
+        airport_iata: Airport IATA code for timezone
+        
+    Returns:
+        True if should suppress, False if should send
+    """
+    # Only suppress REMINDER_24H during quiet hours
+    if event_type != "REMINDER_24H":
+        return False
+    
+    # For reminders, check quiet hours in local airport time
+    return is_quiet_hours_local(utc_datetime, airport_iata)
+
+
+def format_departure_time_human(utc_datetime: datetime, origin_iata: str) -> str:
+    """
+    Format departure time in human-readable local format.
+    
+    Args:
+        utc_datetime: Departure time in UTC
+        origin_iata: Origin airport IATA code
+        
+    Returns:
+        Human readable string like "Lun 8 Jul 02:30 hs (EZE)"
+    """
+    local_time = convert_utc_to_local_airport(utc_datetime, origin_iata)
+    
+    # Spanish day abbreviations
+    day_names = {
+        0: "Lun", 1: "Mar", 2: "Mié", 3: "Jue", 
+        4: "Vie", 5: "Sáb", 6: "Dom"
+    }
+    
+    # Spanish month abbreviations  
+    month_names = {
+        1: "Ene", 2: "Feb", 3: "Mar", 4: "Abr", 5: "May", 6: "Jun",
+        7: "Jul", 8: "Ago", 9: "Sep", 10: "Oct", 11: "Nov", 12: "Dic"
+    }
+    
+    day_abbr = day_names[local_time.weekday()]
+    month_abbr = month_names[local_time.month]
+    
+    return f"{day_abbr} {local_time.day} {month_abbr} {local_time.strftime('%H:%M')} hs ({origin_iata})"
+
+
+def round_eta_to_5min(dt: datetime) -> str:
+    """
+    Round datetime to nearest 5 minutes for deduplication.
+    
+    Args:
+        dt: Datetime to round
+        
+    Returns:
+        Rounded datetime as ISO string or "TBD" if None
+    """
+    if not dt:
+        return "TBD"
+    
+    # Round to nearest 5 minutes
+    minutes = dt.minute
+    rounded_minutes = round(minutes / 5) * 5
+    
+    if rounded_minutes == 60:
+        rounded_dt = dt.replace(hour=dt.hour + 1, minute=0, second=0, microsecond=0)
+    else:
+        rounded_dt = dt.replace(minute=rounded_minutes, second=0, microsecond=0)
+    
+    return rounded_dt.isoformat()
+
+
+def pluralize(count: int, singular: str, plural: str) -> str:
+    """
+    Return properly pluralized string in Spanish.
+    
+    Args:
+        count: Number to check
+        singular: Singular form (e.g., "actividad")
+        plural: Plural form (e.g., "actividades")
+        
+    Returns:
+        Properly pluralized string
+    """
+    return singular if count == 1 else plural
+
+
+async def get_city_name_from_iata(iata_code: str) -> str:
+    """
+    Get city name from IATA code using OpenAI as fallback.
+    
+    Args:
+        iata_code: 3-letter IATA airport code
+        
+    Returns:
+        Human-readable city name in Spanish
+    """
+    # First try our static mapping
+    city_names = {
+        # Colombia
+        "MDE": "Medellín", "BOG": "Bogotá", "CTG": "Cartagena", 
+        "CLO": "Cali", "BAQ": "Barranquilla", "BGA": "Bucaramanga",
+        
+        # Argentina  
+        "EZE": "Buenos Aires", "AEP": "Buenos Aires", "COR": "Córdoba",
+        "MDZ": "Mendoza", "ROS": "Rosario", "IGR": "Iguazú",
+        
+        # Brazil
+        "GRU": "São Paulo", "GIG": "Río de Janeiro", "BSB": "Brasília",
+        
+        # USA
+        "JFK": "Nueva York", "LAX": "Los Ángeles", "MIA": "Miami",
+        "ORD": "Chicago", "DFW": "Dallas",
+        
+        # Europe
+        "MAD": "Madrid", "BCN": "Barcelona", "LHR": "Londres",
+        "CDG": "París", "FCO": "Roma",
+        
+        # Other
+        "LIM": "Lima", "SCL": "Santiago", "PTY": "Ciudad de Panamá",
+        "MEX": "Ciudad de México", "CUN": "Cancún"
+    }
+    
+    if iata_code.upper() in city_names:
+        return city_names[iata_code.upper()]
+    
+    # Fallback: Use OpenAI to get city name
+    try:
+        import openai
+        import os
+        
+        client = openai.AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        
+        response = await client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {
+                    "role": "system", 
+                    "content": "Eres un asistente que convierte códigos IATA de aeropuertos a nombres de ciudades en español. Responde SOLO con el nombre de la ciudad, sin explicaciones."
+                },
+                {
+                    "role": "user",
+                    "content": f"¿Cuál es el nombre de la ciudad para el aeropuerto con código IATA '{iata_code}'?"
+                }
+            ],
+            max_tokens=20,
+            temperature=0
+        )
+        
+        city_name = response.choices[0].message.content.strip()
+        
+        # Log the result for future static mapping updates
+        import structlog
+        logger = structlog.get_logger()
+        logger.info("openai_city_lookup", 
+            iata_code=iata_code,
+            city_name=city_name
+        )
+        
+        return city_name
+        
+    except Exception as e:
+        # Fallback to IATA code if OpenAI fails
+        import structlog
+        logger = structlog.get_logger()
+        logger.warning("city_name_lookup_failed", 
+            iata_code=iata_code,
+            error=str(e)
+        )
+        return iata_code 

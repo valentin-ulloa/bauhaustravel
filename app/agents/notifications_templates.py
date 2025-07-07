@@ -14,6 +14,7 @@ class NotificationType(str, Enum):
     CANCELLED = "cancelled"
     BOARDING = "boarding"
     ITINERARY_READY = "itinerary_ready"
+    LANDING_WELCOME = "landing_welcome"
 
 
 class WhatsAppTemplates:
@@ -48,6 +49,10 @@ class WhatsAppTemplates:
         NotificationType.ITINERARY_READY: {
             "name": "itinerario",
             "sid": "HXa031416ae1602595485bfda7df043545"
+        },
+        NotificationType.LANDING_WELCOME: {
+            "name": "landing_welcome_es",
+            "sid": "HXb9775d224136e998bca4772d854b7169"  # TODO: Replace with real SID when template is created
         }
     }
     
@@ -91,6 +96,21 @@ class WhatsAppTemplates:
         Template: demorado (HXd5b757e51d032582949292a65a5afee1)
         Variables: {{1}} name, {{2}} flight_number, {{3}} new_departure_time
         """
+        from ..utils.timezone_utils import format_departure_time_human
+        
+        # Format new_departure_time if it's not already human readable
+        if new_departure_time and new_departure_time != "Por confirmar":
+            try:
+                if "T" in new_departure_time:  # ISO format
+                    dt = datetime.fromisoformat(new_departure_time.replace('Z', '+00:00'))
+                    formatted_time = format_departure_time_human(dt, trip_data["origin_iata"])
+                else:
+                    formatted_time = new_departure_time  # Already formatted
+            except:
+                formatted_time = "Por confirmar"
+        else:
+            formatted_time = "Por confirmar"
+        
         template_info = cls.TEMPLATES[NotificationType.DELAYED]
         return {
             "template_sid": template_info["sid"],
@@ -98,7 +118,7 @@ class WhatsAppTemplates:
             "template_variables": {
                 "1": trip_data["client_name"],    # name
                 "2": trip_data["flight_number"],  # flight_number
-                "3": new_departure_time           # new_departure_time
+                "3": formatted_time               # new_departure_time (human readable)
             }
         }
     
@@ -201,6 +221,47 @@ class WhatsAppTemplates:
             "template_name": template_info["name"],
             "template_variables": {
                 "1": trip_data["client_name"]  # name
+            }
+        }
+    
+    @classmethod
+    async def format_landing_welcome_async(cls, trip_data: Dict[str, Any], hotel_address: str = "tu alojamiento reservado") -> Dict[str, Any]:
+        """
+        Format landing welcome notification with async city name lookup.
+        
+        Template: landing_welcome_es (HXb9775d224136e998bca4772d854b7169)
+        Message: ¡Llegaste a {{1}}! 🛬
+                Tu alojamiento te espera en {{2}}.
+                Si necesitás algo, estamos a disposición. ¡Disfrutá tu viaje! 🌍
+        Variables: {{1}} destination_city, {{2}} hotel_address
+        """
+        from ..utils.timezone_utils import get_city_name_from_iata
+        
+        destination_iata = trip_data["destination_iata"]
+        
+        # Use async function to get city name (with OpenAI fallback)
+        destination_city = await get_city_name_from_iata(destination_iata)
+        
+        # Try to get hotel address from trip metadata
+        if hotel_address == "tu alojamiento reservado" and "metadata" in trip_data:
+            metadata = trip_data.get("metadata", {})
+            if isinstance(metadata, dict):
+                # Look for hotel information in metadata
+                hotel_info = (
+                    metadata.get("hotel_address") or 
+                    metadata.get("accommodation_address") or
+                    metadata.get("hotel_name") or
+                    "tu alojamiento reservado"
+                )
+                hotel_address = hotel_info
+        
+        template_info = cls.TEMPLATES[NotificationType.LANDING_WELCOME]
+        return {
+            "template_sid": template_info["sid"],
+            "template_name": template_info["name"], 
+            "template_variables": {
+                "1": destination_city,    # destination_city (from OpenAI if needed)
+                "2": hotel_address       # hotel_address or fallback
             }
         }
     

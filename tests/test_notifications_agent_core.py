@@ -256,5 +256,154 @@ class TestNotificationsAgentIntegration:
         assert "errors" in result.data
 
 
+def test_quiet_hours_suppression():
+    """Test that only REMINDER_24H respects quiet hours"""
+    from app.utils.timezone_utils import should_suppress_notification
+    from datetime import datetime, timezone
+    
+    # 23:00 local time (quiet hours)
+    night_time = datetime(2025, 7, 7, 2, 0, 0, tzinfo=timezone.utc)  # 23:00 in EZE
+    
+    # REMINDER_24H should be suppressed during quiet hours
+    assert should_suppress_notification("REMINDER_24H", night_time, "EZE") == True
+    
+    # Critical events should NEVER be suppressed
+    assert should_suppress_notification("DELAYED", night_time, "EZE") == False
+    assert should_suppress_notification("CANCELLED", night_time, "EZE") == False
+    assert should_suppress_notification("BOARDING", night_time, "EZE") == False
+    assert should_suppress_notification("GATE_CHANGE", night_time, "EZE") == False
+
+
+def test_format_departure_time_human():
+    """Test human-readable time formatting"""
+    from app.utils.timezone_utils import format_departure_time_human
+    from datetime import datetime, timezone
+    
+    # Test EZE timezone (UTC-3)
+    utc_time = datetime(2025, 7, 8, 5, 30, 0, tzinfo=timezone.utc)  # 05:30 UTC
+    formatted = format_departure_time_human(utc_time, "EZE")
+    
+    # Should be "Mar 8 Jul 02:30 hs (EZE)" in local time
+    assert "8 Jul 02:30 hs (EZE)" in formatted
+    assert "Mar" in formatted  # Tuesday in Spanish
+
+
+def test_round_eta_to_5min():
+    """Test ETA rounding for deduplication"""
+    from app.utils.timezone_utils import round_eta_to_5min
+    from datetime import datetime, timezone
+    
+    # Test rounding
+    dt1 = datetime(2025, 7, 8, 5, 32, 0, tzinfo=timezone.utc)  # 05:32
+    dt2 = datetime(2025, 7, 8, 5, 33, 0, tzinfo=timezone.utc)  # 05:33
+    
+    # Both should round to 05:30
+    rounded1 = round_eta_to_5min(dt1)
+    rounded2 = round_eta_to_5min(dt2)
+    
+    assert rounded1 == rounded2  # Same rounded value = deduplication
+    assert "05:30:00" in rounded1
+    
+    # Test None handling
+    assert round_eta_to_5min(None) == "TBD"
+
+
+def test_pluralize():
+    """Test Spanish pluralization"""
+    from app.utils.timezone_utils import pluralize
+    
+    # Test singular
+    assert pluralize(1, "actividad", "actividades") == "actividad"
+    
+    # Test plural
+    assert pluralize(0, "actividad", "actividades") == "actividades"
+    assert pluralize(2, "actividad", "actividades") == "actividades"
+    assert pluralize(5, "actividad", "actividades") == "actividades"
+
+
+def test_delayed_notification_deduplication():
+    """Test that DELAYED notifications are properly deduplicated"""
+    import hashlib
+    import json
+    from app.utils.timezone_utils import round_eta_to_5min
+    from datetime import datetime, timezone
+    
+    trip_id = "test-trip-123"
+    
+    # Two ETAs that round to the same 5-minute interval
+    eta1 = datetime(2025, 7, 8, 5, 32, 0, tzinfo=timezone.utc)
+    eta2 = datetime(2025, 7, 8, 5, 33, 0, tzinfo=timezone.utc)
+    
+    # Both should generate the same dedup hash
+    dedup_data1 = {
+        "trip_id": trip_id,
+        "type": "DELAYED", 
+        "eta_rounded": round_eta_to_5min(eta1)
+    }
+    
+    dedup_data2 = {
+        "trip_id": trip_id,
+        "type": "DELAYED",
+        "eta_rounded": round_eta_to_5min(eta2)
+    }
+    
+    hash1 = hashlib.sha256(json.dumps(dedup_data1, sort_keys=True).encode()).hexdigest()[:16]
+    hash2 = hashlib.sha256(json.dumps(dedup_data2, sort_keys=True).encode()).hexdigest()[:16]
+    
+    # Should be identical = deduplication works
+    assert hash1 == hash2
+
+
+async def test_landing_welcome_template():
+    """Test LANDING_WELCOME template formatting with async city lookup"""
+    from app.agents.notifications_templates import WhatsAppTemplates, NotificationType
+    
+    trip_data = {
+        "client_name": "Valentin Ulloa",
+        "destination_iata": "MDE",
+        "metadata": None
+    }
+    
+    result = await WhatsAppTemplates.format_landing_welcome_async(trip_data, "Hotel Dann Carlton, Carrera 43A #7-50")
+    
+    assert result["template_name"] == "landing_welcome_es"
+    assert result["template_variables"]["1"] == "Medellín"  # MDE mapped to city
+    assert result["template_variables"]["2"] == "Hotel Dann Carlton, Carrera 43A #7-50"
+
+
+async def test_city_name_openai_fallback():
+    """Test OpenAI fallback for unknown IATA codes"""
+    from app.utils.timezone_utils import get_city_name_from_iata
+    
+    # Test known city (should use static mapping)
+    known_city = await get_city_name_from_iata("MDE")
+    assert known_city == "Medellín"
+    
+    # Test unknown city (should fallback to OpenAI or IATA code)
+    # Note: This test may call OpenAI in production
+    unknown_city = await get_city_name_from_iata("XYZ")
+    assert isinstance(unknown_city, str)  # Should return something
+
+
+def test_delayed_flight_time_formatting():
+    """Test that DELAYED notifications show human-readable time"""
+    from app.agents.notifications_templates import WhatsAppTemplates
+    
+    trip_data = {
+        "client_name": "Valentin Ulloa",
+        "flight_number": "AV112",
+        "origin_iata": "EZE"
+    }
+    
+    # Test ISO format conversion
+    iso_time = "2025-07-08T05:30:00Z"
+    result = WhatsAppTemplates.format_delayed_flight(trip_data, iso_time)
+    
+    # Should convert to human readable format
+    formatted_time = result["template_variables"]["3"]
+    assert "05:30:00Z" not in formatted_time  # ISO format should be gone
+    assert "hs" in formatted_time  # Should have Spanish time format
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"]) 

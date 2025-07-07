@@ -12,7 +12,7 @@ from ..db.supabase_client import SupabaseDBClient
 from ..models.database import Trip, DatabaseResult, AgencyPlace
 from .notifications_agent import NotificationsAgent
 from .notifications_templates import NotificationType
-from ..utils.timezone_utils import format_departure_time_local
+from ..utils.timezone_utils import format_departure_time_local, pluralize
 
 logger = structlog.get_logger()
 
@@ -451,4 +451,56 @@ Make it personal and exciting for {trip.client_name}!"""
     async def close(self):
         """Clean up resources."""
         await self.db_client.close()
-        logger.info("itinerary_agent_closed") 
+        logger.info("itinerary_agent_closed")
+
+    def _format_itinerary_for_whatsapp(self, itinerary_data: dict) -> str:
+        """
+        Format itinerary data for WhatsApp message with proper pluralization.
+        
+        Args:
+            itinerary_data: Raw itinerary data from OpenAI
+            
+        Returns:
+            Formatted WhatsApp message string
+        """
+        if not itinerary_data:
+            return "No se pudo generar el itinerario en este momento."
+        
+        message_parts = ["¡Aquí tienes tu itinerario para MDE! ✈️", ""]
+        
+        # Group activities by day
+        activities_by_day = {}
+        
+        if "itinerary" in itinerary_data:
+            for item in itinerary_data["itinerary"]:
+                day = item.get("day", "Sin fecha")
+                if day not in activities_by_day:
+                    activities_by_day[day] = []
+                activities_by_day[day].append(item)
+        
+        # Format each day
+        for day, activities in sorted(activities_by_day.items()):
+            day_header = f"*📅 Día {day}:*"
+            message_parts.append(day_header)
+            
+            # Show first 3 activities
+            visible_activities = activities[:3]
+            hidden_count = len(activities) - 3
+            
+            for i, activity in enumerate(visible_activities, 1):
+                activity_name = activity.get("activity", "Actividad sin nombre")
+                activity_line = f"{i}. {activity_name}"
+                message_parts.append(activity_line)
+            
+            # Add "... y X actividades más" with proper pluralization
+            if hidden_count > 0:
+                pluralized = pluralize(hidden_count, "actividad", "actividades")
+                more_line = f"   ... y {hidden_count} {pluralized} más"
+                message_parts.append(more_line)
+            
+            message_parts.append("")  # Empty line between days
+        
+        # Add call to action
+        message_parts.append("¿Te gustaría saber detalles de alguna actividad específica?")
+        
+        return "\n".join(message_parts) 
