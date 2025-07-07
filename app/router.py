@@ -4,7 +4,7 @@ import structlog
 from uuid import UUID
 from fastapi import APIRouter, HTTPException, BackgroundTasks
 from fastapi.responses import JSONResponse
-from pydantic import ValidationError
+from pydantic import ValidationError, BaseModel
 from typing import Optional, Dict, Any
 from datetime import datetime, timezone, date
 import json
@@ -978,7 +978,7 @@ async def test_flight_notification(trip_id: str):
             notification_type=NotificationType.REMINDER_24H,
             extra_data={
                 "weather_info": "buen clima para volar",
-                "additional_info": "Prueba del sistema async optimizado"
+                "additional_info": "¡Buen viaje!"
             }
         )
         
@@ -989,6 +989,60 @@ async def test_flight_notification(trip_id: str):
             "trip_id": trip_id,
             "result": result.data if result.success else result.error,
             "async_system": "operational",
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        
+    except Exception as e:
+        return {
+            "status": "error",
+            "trip_id": trip_id,
+            "error": str(e)
+        }
+
+
+class LandingWelcomeRequest(BaseModel):
+    """Request model for landing welcome notification."""
+    hotel_address: Optional[str] = "tu alojamiento reservado"
+
+
+@router.post("/test-landing-welcome/{trip_id}")
+async def test_landing_welcome_notification(trip_id: str, request: LandingWelcomeRequest):
+    """
+    Test endpoint to send LANDING_WELCOME notification with OpenAI city lookup.
+    
+    Example usage:
+    POST /test-landing-welcome/8a570d1b-f2af-458c-8dbc-3ad58eeb547f
+    Body: {"hotel_address": "Hotel Dann Carlton, Carrera 43A #7-50, El Poblado"}
+    """
+    try:
+        from app.agents.notifications_agent import NotificationsAgent
+        from app.agents.notifications_templates import NotificationType
+        from uuid import UUID
+        
+        agent = NotificationsAgent()
+        
+        # Send landing welcome notification with hotel data
+        result = await agent.send_single_notification(
+            trip_id=UUID(trip_id),
+            notification_type=NotificationType.LANDING_WELCOME,
+            extra_data={
+                "hotel_address": request.hotel_address
+            }
+        )
+        
+        await agent.close()
+        
+        return {
+            "status": "landing_welcome_sent" if result.success else "landing_welcome_failed",
+            "trip_id": trip_id,
+            "hotel_address": request.hotel_address,
+            "result": result.data if result.success else result.error,
+            "template_used": "landing_welcome_es",
+            "features": {
+                "openai_city_lookup": "enabled",
+                "hotel_metadata_support": "enabled", 
+                "idempotency": "enabled"
+            },
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
         
