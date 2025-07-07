@@ -529,3 +529,75 @@ The LANDING_WELCOME template is now fully implemented with:
 - ✅ Real WhatsApp delivery confirmed
 
 **Ready for passenger landings!** 🛬
+
+---
+
+# ✅ DELAYED NOTIFICATION SPAM - FIXED
+
+## 🎯 PROBLEM IDENTIFIED
+Vale reported receiving duplicate delay messages:
+1. `"La nueva hora estimada de salida es Por confirmar"`
+2. `"La nueva hora estimada de salida es Mar 8 Jul 02:30 hs (EZE)"`
+
+**Root cause**: AeroAPI ping-pong data (02:30 → NULL → 02:30) triggering multiple notifications.
+
+## 🛠️ SOLUTION IMPLEMENTED
+
+### 1️⃣ **PING-PONG CONSOLIDATION**
+- **Logic**: Detect A→B→A patterns in same polling cycle
+- **Action**: Suppress notifications that return to original value
+- **Result**: 0 notifications for null cycles ✅
+
+### 2️⃣ **15-MINUTE COOLDOWN**
+- **Logic**: Block DELAYED notifications within 15min of last send
+- **Database**: Query `notifications_log` for recent DELAYED entries
+- **Graceful**: Critical updates still allowed on error ✅
+
+### 3️⃣ **ETA PRIORITIZATION**
+- **Logic**: Always prioritize concrete times over "Por confirmar"
+- **Format**: ISO dates → "Mar 8 Jul 02:30 hs (EZE)"
+- **Smart**: NULL/TBD handled gracefully ✅
+
+### 4️⃣ **ENHANCED DEDUPLICATION**
+- **Content-aware**: Track actual ETA values sent to users
+- **Prevent**: Same information sent twice
+- **Hash**: Final ETA value for precise deduplication ✅
+
+## 🧪 TESTING COMPLETED
+
+### Unit Tests Results:
+```
+🔄 Testing ping-pong change consolidation...
+✅ Ping-pong consolidation working correctly
+
+🔄 Testing real change consolidation...  
+✅ Real change consolidation working correctly
+
+🔄 Testing ETA prioritization...
+Formatted ETA: Mar 8 Jul 02:30 hs (EZE)
+✅ ETA prioritization working correctly
+
+🔄 Testing delay cooldown logic...
+✅ Delay cooldown logic implemented
+```
+
+## 📊 EXPECTED USER EXPERIENCE
+
+**Before Fix**:
+- Multiple confusing messages
+- "Por confirmar" followed by actual time
+- Poor UX and notification spam
+
+**After Fix**:
+- Single, clear notification per actual change
+- Always shows most informative time format
+- 15min cooldown prevents rapid-fire updates
+- Ping-pong changes suppressed completely
+
+## 🚀 PRODUCTION STATUS
+- **Deployed**: https://web-production-92d8d.up.railway.app ✅
+- **Health**: All systems operational ✅
+- **Scheduler**: 4 jobs running normally ✅
+- **Ready**: For real flight monitoring ✅
+
+**NEXT**: Monitor Vale's AV112 flight tomorrow for validation! 🛫
