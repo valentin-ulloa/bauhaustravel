@@ -15,7 +15,7 @@ from .notifications_templates import NotificationType, WhatsAppTemplates, get_no
 from ..services.aeroapi_client import AeroAPIClient, FlightStatus
 from ..services.async_twilio_client import AsyncTwilioClient
 from ..services.notification_retry_service import NotificationRetryService
-from ..utils.timezone_utils import is_quiet_hours_local
+from ..utils.timezone_utils import is_quiet_hours_local, format_departure_time_local
 
 logger = structlog.get_logger()
 
@@ -791,12 +791,17 @@ class NotificationsAgent:
         Returns:
             Dict with template_sid, template_name and template_variables
         """
+        # Format departure_date to departure_time for templates
+        departure_datetime = trip.departure_date
+        formatted_departure_time = format_departure_time_local(departure_datetime, trip.origin_iata)
+        
         trip_data = {
             "client_name": trip.client_name,
             "flight_number": trip.flight_number,
             "origin_iata": trip.origin_iata,
             "destination_iata": trip.destination_iata,
             "departure_date": trip.departure_date.isoformat(),
+            "departure_time": formatted_departure_time,  # Add formatted time for templates
             "status": trip.status
         }
         
