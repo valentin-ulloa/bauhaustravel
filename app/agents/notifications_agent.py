@@ -313,11 +313,14 @@ class NotificationsAgent:
                     # Detect changes
                     changes = self.aeroapi_client.detect_flight_changes(current_status, previous_status)
                     
+                    # CONSOLIDATE PING-PONG CHANGES: Filter out A→B→A patterns in same cycle
+                    consolidated_changes = self._consolidate_ping_pong_changes(changes, trip)
+                    
                     # Save current status to database
                     await self._save_flight_status(trip, current_status)
                     
-                    # Process each change and send notifications
-                    for change in changes:
+                    # Process each consolidated change and send notifications
+                    for change in consolidated_changes:
                         # Check quiet hours based on origin airport timezone
                         is_quiet_hours = is_quiet_hours_local(now_utc, trip.origin_iata)
                         
@@ -342,7 +345,7 @@ class NotificationsAgent:
                         trip_id=str(trip.id),
                         flight_number=trip.flight_number,
                         status=current_status.status,
-                        changes_detected=len(changes),
+                        changes_detected=len(consolidated_changes),
                         next_check=next_check.isoformat()
                     )
                 
@@ -470,7 +473,7 @@ class NotificationsAgent:
         change: Dict[str, Any], 
         current_status: FlightStatus
     ):
-        """Process a detected flight change and send appropriate notification with deduplication"""
+        """Process a detected flight change and send appropriate notification with advanced deduplication"""
         try:
             change_type = change["type"]
             notification_type = change["notification_type"]
@@ -495,60 +498,28 @@ class NotificationsAgent:
                 "change_type": change_type
             }
             
-            # DEDUPLICATION FOR DELAYED NOTIFICATIONS
+            # ADVANCED DEDUPLICATION FOR DELAYED NOTIFICATIONS
             if notification_type == "delayed":
-                # Round ETA to 5-minute intervals for deduplication
-                new_eta_str = change.get("new_value", "")
-                if new_eta_str:
-                    try:
-                        if "T" in new_eta_str:  # ISO format
-                            new_eta_dt = datetime.fromisoformat(new_eta_str.replace('Z', '+00:00'))
-                            rounded_eta = round_eta_to_5min(new_eta_dt)
-                        else:
-                            rounded_eta = "TBD"
-                    except:
-                        rounded_eta = "TBD"
-                else:
-                    rounded_eta = "TBD"
+                # Check 15-minute cooldown for DELAYED notifications
+                if not await self._should_send_delay_notification(trip, change, now_utc):
+                    return
                 
-                # Create deduplication hash
+                # Get the final ETA to send (prioritize concrete times over TBD)
+                final_eta = self._get_prioritized_eta(change.get("new_value", ""), trip.origin_iata)
+                
+                # Create enhanced deduplication hash
                 dedup_data = {
                     "trip_id": str(trip.id),
                     "type": "DELAYED",
-                    "eta_rounded": rounded_eta
+                    "eta_final": final_eta
                 }
                 dedup_hash = hashlib.sha256(
                     json.dumps(dedup_data, sort_keys=True).encode()
                 ).hexdigest()[:16]
                 
-                # Check if this exact delay was already sent
-                try:
-                    existing_delay = await self.db_client.execute_query(
-                        """
-                        SELECT id FROM notifications_log 
-                        WHERE trip_id = %s AND notification_type = 'DELAYED' 
-                        AND idempotency_hash = %s AND delivery_status = 'SENT'
-                        AND sent_at > NOW() - INTERVAL '2 hours'
-                        LIMIT 1
-                        """,
-                        (str(trip.id), dedup_hash)
-                    )
-                    
-                    if existing_delay.data:
-                        logger.info("delayed_notification_deduplicated", 
-                            trip_id=str(trip.id),
-                            eta_rounded=rounded_eta,
-                            dedup_hash=dedup_hash
-                        )
-                        return
-                except Exception as e:
-                    logger.warning("delay_deduplication_check_failed", 
-                        trip_id=str(trip.id),
-                        error=str(e)
-                    )
-                
-                # Store rounded ETA for deduplication in extra_data
+                # Store the hash for deduplication
                 extra_data["dedup_hash"] = dedup_hash
+                extra_data["new_departure_time"] = final_eta
             
             # Add specific data based on change type
             if change_type == "gate_change":
@@ -597,6 +568,113 @@ class NotificationsAgent:
                 change_type=change.get("type"),
                 error=str(e)
             )
+    
+    async def _should_send_delay_notification(
+        self, 
+        trip: Trip, 
+        change: Dict[str, Any], 
+        now_utc: datetime
+    ) -> bool:
+        """
+        Determine if a DELAYED notification should be sent based on cooldown and content.
+        
+        Rules:
+        1. 15-minute cooldown between DELAYED notifications
+        2. Don't send if new ETA is same as last notified ETA
+        3. Prioritize concrete times over TBD
+        """
+        try:
+            new_eta = change.get("new_value", "")
+            final_eta = self._get_prioritized_eta(new_eta, trip.origin_iata)
+            
+            # Check last DELAYED notification within 15 minutes
+            recent_delay_logs = await self.db_client.execute_query(
+                """
+                SELECT sent_at, template_name, twilio_message_sid 
+                FROM notifications_log 
+                WHERE trip_id = %s AND notification_type = 'DELAYED' 
+                AND delivery_status = 'SENT'
+                AND sent_at > %s
+                ORDER BY sent_at DESC
+                LIMIT 1
+                """,
+                (str(trip.id), now_utc - timedelta(minutes=15))
+            )
+            
+            if recent_delay_logs.data:
+                last_sent_at = datetime.fromisoformat(recent_delay_logs.data[0]["sent_at"])
+                cooldown_remaining = 900 - (now_utc - last_sent_at).total_seconds()  # 15 min = 900 sec
+                
+                logger.info("delay_notification_cooldown_active", 
+                    trip_id=str(trip.id),
+                    cooldown_remaining_seconds=int(cooldown_remaining),
+                    last_sent_at=last_sent_at.isoformat()
+                )
+                return False
+            
+            # Check if this ETA was already sent recently (even outside cooldown)
+            recent_eta_logs = await self.db_client.execute_query(
+                """
+                SELECT id FROM notifications_log 
+                WHERE trip_id = %s AND notification_type = 'DELAYED' 
+                AND delivery_status = 'SENT'
+                AND sent_at > %s
+                AND template_name LIKE %s
+                LIMIT 1
+                """,
+                (str(trip.id), now_utc - timedelta(hours=2), f"%{final_eta}%")
+            )
+            
+            if recent_eta_logs.data:
+                logger.info("delay_notification_same_eta_already_sent", 
+                    trip_id=str(trip.id),
+                    eta=final_eta
+                )
+                return False
+            
+            logger.info("delay_notification_approved", 
+                trip_id=str(trip.id),
+                final_eta=final_eta
+            )
+            return True
+            
+        except Exception as e:
+            logger.error("delay_cooldown_check_failed", 
+                trip_id=str(trip.id),
+                error=str(e)
+            )
+            # On error, allow sending (better to over-notify than miss critical updates)
+            return True
+    
+    def _get_prioritized_eta(self, new_eta: str, origin_iata: str = None) -> str:
+        """
+        Prioritize concrete times over TBD/Por confirmar.
+        
+        Returns the most informative ETA format for notifications.
+        """
+        if not new_eta or new_eta in ["", "null", "None", "NULL"]:
+            return "Por confirmar"
+        
+        try:
+            # If it's an ISO datetime, format it nicely
+            if "T" in new_eta and len(new_eta) > 10:
+                dt = datetime.fromisoformat(new_eta.replace('Z', '+00:00'))
+                # Use our existing human formatting
+                from ..utils.timezone_utils import format_departure_time_human
+                if origin_iata:
+                    return format_departure_time_human(dt, origin_iata)
+                else:
+                    # Fallback to UTC format if no origin provided
+                    return dt.strftime("%d %b %H:%M UTC")
+            else:
+                # Already formatted or simple string
+                return new_eta if new_eta != "null" else "Por confirmar"
+        except Exception as e:
+            logger.warning("eta_formatting_failed", 
+                eta=new_eta, 
+                error=str(e)
+            )
+            return new_eta if new_eta and new_eta != "null" else "Por confirmar"
     
     def _map_notification_type(self, notification_type: str) -> Optional[NotificationType]:
         """Map string notification type to our enum"""
@@ -1073,4 +1151,78 @@ class NotificationsAgent:
             return DatabaseResult(
                 success=False,
                 error=str(e)
-            ) 
+            )
+
+    def _consolidate_ping_pong_changes(self, changes: List[Dict[str, Any]], trip: Trip) -> List[Dict[str, Any]]:
+        """
+        Consolidate ping-pong changes within the same polling cycle.
+        
+        Examples:
+        - estimated_out: 02:30 → NULL → 02:30 = No notification (back to original)
+        - estimated_out: 02:30 → 03:15 → NULL → 03:15 = Send only final: 02:30 → 03:15
+        - gate: A1 → B2 → A1 = No notification (back to original)
+        """
+        if not changes:
+            return changes
+        
+        logger.info("consolidating_ping_pong_changes", 
+            trip_id=str(trip.id),
+            original_changes_count=len(changes),
+            changes=[f"{c['type']}:{c.get('old_value')}→{c.get('new_value')}" for c in changes]
+        )
+        
+        # Group changes by type
+        changes_by_type = {}
+        for change in changes:
+            change_type = change["type"]
+            if change_type not in changes_by_type:
+                changes_by_type[change_type] = []
+            changes_by_type[change_type].append(change)
+        
+        consolidated = []
+        
+        for change_type, type_changes in changes_by_type.items():
+            if len(type_changes) == 1:
+                # Single change, keep it
+                consolidated.append(type_changes[0])
+            else:
+                # Multiple changes of same type - consolidate
+                first_change = type_changes[0]
+                last_change = type_changes[-1]
+                
+                # Check if we're back to the original value (ping-pong)
+                if first_change["old_value"] == last_change["new_value"]:
+                    logger.info("ping_pong_detected_suppressed", 
+                        trip_id=str(trip.id),
+                        change_type=change_type,
+                        original_value=first_change["old_value"],
+                        changes_suppressed=len(type_changes)
+                    )
+                    # Back to original - suppress all notifications
+                    continue
+                else:
+                    # Net change - send consolidated notification
+                    consolidated_change = {
+                        "type": change_type,
+                        "old_value": first_change["old_value"],
+                        "new_value": last_change["new_value"],
+                        "notification_type": last_change["notification_type"],
+                        "consolidation_count": len(type_changes)
+                    }
+                    consolidated.append(consolidated_change)
+                    
+                    logger.info("changes_consolidated", 
+                        trip_id=str(trip.id),
+                        change_type=change_type,
+                        original_count=len(type_changes),
+                        final_change=f"{first_change['old_value']}→{last_change['new_value']}"
+                    )
+        
+        logger.info("consolidation_completed", 
+            trip_id=str(trip.id),
+            original_changes=len(changes),
+            consolidated_changes=len(consolidated),
+            suppressed_ping_pongs=len(changes) - len(consolidated)
+        )
+        
+        return consolidated 
