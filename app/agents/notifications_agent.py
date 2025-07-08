@@ -1370,3 +1370,128 @@ class NotificationsAgent:
         )
         
         return consolidated 
+
+    async def check_single_trip_status(self, trip: Trip) -> DatabaseResult:
+        """
+        Check flight status for a single trip and send notifications if needed.
+        
+        This method is used by the intelligent polling system to check specific trips
+        when their next_check_at time has arrived.
+        
+        Args:
+            trip: Trip object to check status for
+            
+        Returns:
+            DatabaseResult with operation status
+        """
+        try:
+            logger.info("checking_single_trip_status",
+                trip_id=str(trip.id),
+                flight_number=trip.flight_number
+            )
+            
+            # Get current flight status from AeroAPI
+            from ..services.aeroapi_client import AeroAPIClient
+            aeroapi_client = AeroAPIClient()
+            
+            # Format flight date
+            flight_date_str = trip.departure_date.strftime("%Y-%m-%d")
+            
+            current_status = await aeroapi_client.get_flight_status(
+                trip.flight_number,
+                flight_date_str
+            )
+            
+            if not current_status:
+                logger.warning("single_trip_no_flight_status",
+                    trip_id=str(trip.id),
+                    flight_number=trip.flight_number
+                )
+                return DatabaseResult(
+                    success=True,
+                    data={"trip_id": str(trip.id), "status": "no_flight_data"}
+                )
+            
+            # Get previous status from database
+            latest_status = await self.db_client.get_latest_flight_status(trip.id)
+            
+            previous_status = None
+            if latest_status:
+                try:
+                    from ..services.aeroapi_client import FlightStatus
+                    previous_status = FlightStatus(
+                        ident=latest_status.get("flight_number", ""),
+                        status=latest_status.get("status", ""),
+                        gate_origin=latest_status.get("gate_origin"),
+                        gate_destination=latest_status.get("gate_destination"),
+                        estimated_out=latest_status.get("estimated_out"),
+                        estimated_in=latest_status.get("estimated_in"),
+                        actual_out=latest_status.get("actual_out"),
+                        actual_in=latest_status.get("actual_in")
+                    )
+                except Exception as e:
+                    logger.warning("previous_status_parse_failed",
+                        trip_id=str(trip.id),
+                        error=str(e)
+                    )
+            
+            # Detect changes
+            changes = aeroapi_client.detect_flight_changes(current_status, previous_status)
+            
+            # Update trip with latest status
+            await self.db_client.update_trip_comprehensive(trip.id, current_status)
+            
+            # Save status to history
+            await self.db_client.save_flight_status(
+                trip_id=trip.id,
+                flight_number=current_status.ident,
+                flight_date=flight_date_str,
+                status=current_status.status,
+                gate_origin=current_status.gate_origin,
+                gate_destination=current_status.gate_destination,
+                estimated_out=current_status.estimated_out,
+                actual_out=current_status.actual_out,
+                estimated_in=current_status.estimated_in,
+                actual_in=current_status.actual_in,
+                source="intelligent_polling"
+            )
+            
+            # Process changes and send notifications
+            notifications_sent = 0
+            for change in changes:
+                try:
+                    await self._process_flight_change(trip, change, current_status)
+                    notifications_sent += 1
+                except Exception as change_error:
+                    logger.error("single_trip_change_processing_failed",
+                        trip_id=str(trip.id),
+                        change_type=change.get("type"),
+                        error=str(change_error)
+                    )
+            
+            logger.info("single_trip_status_check_completed",
+                trip_id=str(trip.id),
+                current_status=current_status.status,
+                changes_detected=len(changes),
+                notifications_sent=notifications_sent
+            )
+            
+            return DatabaseResult(
+                success=True,
+                data={
+                    "trip_id": str(trip.id),
+                    "current_status": current_status.status,
+                    "changes_detected": len(changes),
+                    "notifications_sent": notifications_sent
+                }
+            )
+            
+        except Exception as e:
+            logger.error("single_trip_status_check_failed",
+                trip_id=str(trip.id),
+                error=str(e)
+            )
+            return DatabaseResult(
+                success=False,
+                error=str(e)
+            ) 

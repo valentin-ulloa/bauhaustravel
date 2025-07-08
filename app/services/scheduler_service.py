@@ -55,11 +55,11 @@ class SchedulerService:
                 replace_existing=True
             )
             
-            # Job 2: Flight status polling (every 15 minutes)
+            # Job 2: INTELLIGENT flight status polling (every 5 minutes, checks next_check_at)
             self.scheduler.add_job(
-                self._process_flight_polling,
-                IntervalTrigger(minutes=15),
-                id='flight_polling',
+                self._process_intelligent_flight_polling,
+                IntervalTrigger(minutes=5),  # Check every 5 minutes but only poll when needed
+                id='intelligent_flight_polling',
                 max_instances=1,
                 replace_existing=True
             )
@@ -232,19 +232,174 @@ class SchedulerService:
         except Exception as e:
             logger.error("24h_reminders_exception", error=str(e))
     
-    async def _process_flight_polling(self):
-        """Process flight status polling (every 15 minutes)"""
+    async def _process_intelligent_flight_polling(self):
+        """
+        INTELLIGENT flight status polling - only polls when next_check_at indicates it's time.
+        
+        This replaces the old every-15-minutes polling to reduce AeroAPI costs.
+        Logic:
+        1. Check trips where next_check_at <= now
+        2. Poll only those flights
+        3. Update next_check_at based on flight status:
+           - Pre-departure: next_check_at = departure_time - 2h  
+           - Departed: next_check_at = estimated_landing_time
+           - Landed: Remove from polling
+        """
         try:
-            logger.info("processing_flight_polling")
-            result = await self.notifications_agent.run("status_change")
+            now_utc = datetime.now(timezone.utc)
             
-            if result.success:
-                logger.info("flight_polling_completed", data=result.data)
-            else:
-                logger.error("flight_polling_failed", error=result.error)
+            logger.info("intelligent_polling_check", 
+                current_time=now_utc.isoformat()
+            )
+            
+            # Get trips that need polling (next_check_at <= now)
+            trips_to_poll = await self.db_client.get_trips_to_poll(now_utc)
+            
+            if not trips_to_poll:
+                logger.info("intelligent_polling_no_trips_ready")
+                return
+            
+            logger.info("intelligent_polling_processing_trips", 
+                trips_count=len(trips_to_poll),
+                trip_ids=[str(trip.id) for trip in trips_to_poll]
+            )
+            
+            # Process each trip with intelligent next_check_at logic
+            processed_count = 0
+            for trip in trips_to_poll:
+                try:
+                    # Run status change check for this specific trip
+                    result = await self.notifications_agent.check_single_trip_status(trip)
+                    
+                    if result.success:
+                        processed_count += 1
+                        
+                        # INTELLIGENT NEXT_CHECK_AT LOGIC
+                        await self._update_intelligent_next_check(trip, now_utc)
+                        
+                        logger.info("intelligent_polling_trip_processed", 
+                            trip_id=str(trip.id),
+                            flight_number=trip.flight_number
+                        )
+                    else:
+                        logger.warning("intelligent_polling_trip_failed", 
+                            trip_id=str(trip.id),
+                            error=result.error
+                        )
+                        
+                        # On error, retry in 30 minutes
+                        next_check = now_utc + timedelta(minutes=30)
+                        await self.db_client.update_next_check_at(trip.id, next_check)
+                        
+                except Exception as trip_error:
+                    logger.error("intelligent_polling_trip_exception", 
+                        trip_id=str(trip.id),
+                        error=str(trip_error)
+                    )
+                    
+                    # On exception, retry in 1 hour
+                    next_check = now_utc + timedelta(hours=1)
+                    await self.db_client.update_next_check_at(trip.id, next_check)
+            
+            logger.info("intelligent_polling_completed", 
+                processed_count=processed_count,
+                total_trips=len(trips_to_poll)
+            )
                 
         except Exception as e:
-            logger.error("flight_polling_exception", error=str(e))
+            logger.error("intelligent_polling_exception", error=str(e))
+    
+    async def _update_intelligent_next_check(self, trip: Trip, now_utc: datetime):
+        """
+        Update next_check_at based on intelligent flight status logic.
+        
+        Logic:
+        - Pre-departure (>2h): next_check_at = departure_time - 2h
+        - Pre-departure (<2h): next_check_at = departure_time - 30min  
+        - Departed: next_check_at = estimated_landing_time
+        - Landed: next_check_at = None (remove from polling)
+        """
+        try:
+            time_to_departure = trip.departure_date - now_utc
+            hours_to_departure = time_to_departure.total_seconds() / 3600
+            
+            # Get current flight status to determine state
+            from ..services.aeroapi_client import AeroAPIClient
+            aeroapi_client = AeroAPIClient()
+            flight_date_str = trip.departure_date.strftime("%Y-%m-%d")
+            current_status = await aeroapi_client.get_flight_status(trip.flight_number, flight_date_str)
+            
+            if current_status:
+                status_lower = current_status.status.lower()
+                
+                # Case 1: Flight has departed
+                if any(keyword in status_lower for keyword in ['departed', 'airborne', 'en route', 'cruising']):
+                    if trip.estimated_arrival:
+                        # Set next check to estimated landing time
+                        next_check = trip.estimated_arrival
+                        logger.info("intelligent_next_check_departed_to_landing", 
+                            trip_id=str(trip.id),
+                            next_check=next_check.isoformat(),
+                            current_status=current_status.status
+                        )
+                    else:
+                        # No estimated arrival, check in 2 hours
+                        next_check = now_utc + timedelta(hours=2)
+                        logger.warning("intelligent_next_check_departed_no_eta", 
+                            trip_id=str(trip.id),
+                            next_check=next_check.isoformat()
+                        )
+                
+                # Case 2: Flight has landed  
+                elif any(keyword in status_lower for keyword in ['arrived', 'landed']):
+                    # Remove from polling (set far future date)
+                    next_check = now_utc + timedelta(days=365)
+                    logger.info("intelligent_next_check_landed_removed", 
+                        trip_id=str(trip.id),
+                        current_status=current_status.status
+                    )
+                
+                # Case 3: Pre-departure logic
+                else:
+                    if hours_to_departure > 2:
+                        # Check 2 hours before departure
+                        next_check = trip.departure_date - timedelta(hours=2)
+                    elif hours_to_departure > 0.5:
+                        # Check 30 minutes before departure
+                        next_check = trip.departure_date - timedelta(minutes=30)
+                    else:
+                        # Departure imminent, check in 15 minutes
+                        next_check = now_utc + timedelta(minutes=15)
+                    
+                    logger.info("intelligent_next_check_pre_departure", 
+                        trip_id=str(trip.id),
+                        hours_to_departure=round(hours_to_departure, 2),
+                        next_check=next_check.isoformat(),
+                        current_status=current_status.status
+                    )
+            else:
+                # No flight status available, default logic
+                if hours_to_departure > 2:
+                    next_check = trip.departure_date - timedelta(hours=2)
+                else:
+                    next_check = now_utc + timedelta(hours=1)
+                
+                logger.warning("intelligent_next_check_no_status", 
+                    trip_id=str(trip.id),
+                    next_check=next_check.isoformat()
+                )
+            
+            # Update next_check_at in database
+            await self.db_client.update_next_check_at(trip.id, next_check)
+            
+        except Exception as e:
+            logger.error("intelligent_next_check_update_failed", 
+                trip_id=str(trip.id),
+                error=str(e)
+            )
+            # Fallback: check in 1 hour
+            fallback_check = now_utc + timedelta(hours=1)
+            await self.db_client.update_next_check_at(trip.id, fallback_check)
     
     async def _process_boarding_notifications(self):
         """Check for boarding notifications needed in next 5 minutes"""

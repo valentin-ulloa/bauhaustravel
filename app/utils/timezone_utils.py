@@ -215,16 +215,21 @@ def should_suppress_notification(
 
 def format_departure_time_human(utc_datetime: datetime, origin_iata: str) -> str:
     """
-    Format departure time in human-readable local format.
+    Format departure time in human-readable format.
+    
+    FIXED: Show time as stored (assuming it was entered in local airport time)
+    to avoid double timezone conversion that was causing 22:05 → 23:05 bug.
     
     Args:
-        utc_datetime: Departure time in UTC
+        utc_datetime: Departure time (typically in UTC but represents local time)
         origin_iata: Origin airport IATA code
         
     Returns:
-        Human readable string like "Lun 8 Jul 02:30 hs (EZE)"
+        Human readable string like "Mar 8 Jul 22:05 hs (LHR)"
     """
-    local_time = convert_utc_to_local_airport(utc_datetime, origin_iata)
+    # FIXED: Use UTC time directly without local conversion
+    # This assumes the stored time already represents local airport time
+    display_time = utc_datetime.replace(tzinfo=None)  # Remove timezone info for display
     
     # Spanish day abbreviations
     day_names = {
@@ -238,10 +243,10 @@ def format_departure_time_human(utc_datetime: datetime, origin_iata: str) -> str
         7: "Jul", 8: "Ago", 9: "Sep", 10: "Oct", 11: "Nov", 12: "Dic"
     }
     
-    day_abbr = day_names[local_time.weekday()]
-    month_abbr = month_names[local_time.month]
+    day_abbr = day_names[display_time.weekday()]
+    month_abbr = month_names[display_time.month]
     
-    return f"{day_abbr} {local_time.day} {month_abbr} {local_time.strftime('%H:%M')} hs ({origin_iata})"
+    return f"{day_abbr} {display_time.day} {month_abbr} {display_time.strftime('%H:%M')} hs ({origin_iata})"
 
 
 def round_eta_to_5min(dt: datetime) -> str:

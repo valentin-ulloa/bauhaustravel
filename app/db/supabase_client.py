@@ -157,6 +157,27 @@ class SupabaseDBClient:
                 "next_check_at": next_check_at.isoformat()
             }
             
+            # FIXED: Extract estimated_arrival from metadata if provided by user
+            if trip_data.metadata and 'flight_details' in trip_data.metadata:
+                flight_details = trip_data.metadata['flight_details']
+                if 'expected_arrival' in flight_details:
+                    try:
+                        # Parse expected_arrival from metadata and add to insert_data
+                        expected_arrival_str = flight_details['expected_arrival']
+                        estimated_arrival_dt = datetime.fromisoformat(expected_arrival_str.replace('Z', '+00:00'))
+                        insert_data["estimated_arrival"] = estimated_arrival_dt.isoformat()
+                        
+                        logger.info("estimated_arrival_extracted_from_metadata",
+                            flight_number=trip_data.flight_number,
+                            estimated_arrival=estimated_arrival_dt.isoformat()
+                        )
+                    except (ValueError, KeyError) as e:
+                        logger.warning("estimated_arrival_parse_failed",
+                            flight_number=trip_data.flight_number,
+                            expected_arrival=flight_details.get('expected_arrival'),
+                            error=str(e)
+                        )
+            
             response = await self._client.post(
                 f"{self.rest_url}/trips",
                 json=insert_data
