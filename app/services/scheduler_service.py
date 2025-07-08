@@ -13,6 +13,7 @@ from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.date import DateTrigger
 
 from ..agents.notifications_agent import NotificationsAgent
+from ..agents.notifications_templates import NotificationType
 from ..db.supabase_client import SupabaseDBClient
 from ..models.database import Trip
 
@@ -301,8 +302,6 @@ class SchedulerService:
     async def _send_immediate_reminder(self, trip_id: str):
         """Send immediate 24h reminder for last-minute trips"""
         try:
-            from ..agents.notifications_templates import NotificationType
-            
             result = await self.notifications_agent.send_single_notification(
                 trip_id, 
                 NotificationType.REMINDER_24H,
@@ -326,8 +325,6 @@ class SchedulerService:
     async def _send_boarding_notification(self, trip_id: str):
         """Send boarding notification 40 minutes before departure"""
         try:
-            from ..agents.notifications_templates import NotificationType
-            
             result = await self.notifications_agent.send_single_notification(
                 trip_id,
                 NotificationType.BOARDING

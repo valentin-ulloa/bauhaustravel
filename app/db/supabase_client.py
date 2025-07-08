@@ -365,9 +365,34 @@ class SupabaseDBClient:
                 f"{self.rest_url}/notifications_log",
                 json=notification_data
             )
-            # 👈 aquí es donde necesitamos ver el detalle
+            
+            # Handle duplicate idempotency constraint gracefully
+            if response.status_code == 409:
+                # Parse the error to check if it's idempotency constraint violation
+                try:
+                    error_data = response.json()
+                    if "idx_notifications_log_idempotency" in error_data.get("details", ""):
+                        logger.info("duplicate_notification_prevented_by_constraint", 
+                            trip_id=str(trip_id),
+                            notification_type=notification_type,
+                            idempotency_hash=idempotency_hash
+                        )
+                        return DatabaseResult(
+                            success=True,
+                            data={"status": "duplicate_prevented_by_constraint"},
+                            affected_rows=0
+                        )
+                except:
+                    pass  # Fall through to normal error handling
+            
+            # Log other errors for debugging
             if response.status_code >= 400:
-                print("📄 SUPABASE ERROR:", response.status_code, response.text)
+                logger.error("supabase_notification_log_error", 
+                    status_code=response.status_code,
+                    response_text=response.text,
+                    trip_id=str(trip_id),
+                    notification_type=notification_type
+                )
                 
             response.raise_for_status()
             
@@ -1434,8 +1459,7 @@ class SupabaseDBClient:
         try:
             update_data = {
                 "status": flight_status.status,
-                "gate": flight_status.gate_origin,
-                "updated_at": datetime.now(timezone.utc).isoformat()
+                "gate": flight_status.gate_origin
             }
             
             # Update departure_date if we have estimated_out
@@ -1450,6 +1474,21 @@ class SupabaseDBClient:
                     logger.warning("invalid_estimated_out_format", 
                         trip_id=str(trip_id),
                         estimated_out=flight_status.estimated_out,
+                        error=str(e)
+                    )
+            
+            # Update estimated_arrival if we have estimated_in from AeroAPI
+            if flight_status.estimated_in:
+                try:
+                    # Parse and convert estimated_in to proper datetime
+                    estimated_arrival_dt = datetime.fromisoformat(
+                        flight_status.estimated_in.replace('Z', '+00:00')
+                    )
+                    update_data["estimated_arrival"] = estimated_arrival_dt.isoformat()
+                except ValueError as e:
+                    logger.warning("invalid_estimated_in_format", 
+                        trip_id=str(trip_id),
+                        estimated_in=flight_status.estimated_in,
                         error=str(e)
                     )
             
@@ -1489,6 +1528,7 @@ class SupabaseDBClient:
                 status=flight_status.status,
                 gate=flight_status.gate_origin,
                 estimated_out=flight_status.estimated_out,
+                estimated_in=flight_status.estimated_in,
                 updated_fields=list(update_data.keys())
             )
             
@@ -1538,9 +1578,14 @@ class SupabaseDBClient:
             aeroapi_client = AeroAPIClient()
             
             # Get fresh flight status
-            departure_date = datetime.fromisoformat(
-                trip_data["departure_date"].replace('Z', '+00:00')
-            )
+            departure_date_raw = trip_data["departure_date"]
+            if isinstance(departure_date_raw, str):
+                departure_date = datetime.fromisoformat(
+                    departure_date_raw.replace('Z', '+00:00')
+                )
+            else:
+                departure_date = departure_date_raw
+            
             flight_date_str = departure_date.strftime("%Y-%m-%d")
             
             current_status = await aeroapi_client.get_flight_status(

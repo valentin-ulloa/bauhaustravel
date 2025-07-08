@@ -62,8 +62,28 @@ class MessageConfig:
         return defaults.get(key, fallback or key)
     
     @classmethod
+    async def get_weather_text_async(cls, destination_iata: str, agency_id: str = None) -> str:
+        """
+        Get real weather text for 24h reminders.
+        
+        Args:
+            destination_iata: Destination airport for weather lookup
+            agency_id: Optional agency ID for custom messages
+            
+        Returns:
+            Real weather description or fallback text
+        """
+        try:
+            from ..services.weather_service import WeatherService
+            weather_service = WeatherService()
+            return await weather_service.get_weather_for_destination(destination_iata)
+        except Exception:
+            # Fallback to static text if weather service fails
+            return cls.get_message("weather_text", agency_id, cls.DEFAULT_WEATHER_TEXT)
+    
+    @classmethod
     def get_weather_text(cls, agency_id: str = None) -> str:
-        """Get weather text for 24h reminders."""
+        """Get fallback weather text for 24h reminders (sync version)."""
         return cls.get_message("weather_text", agency_id, cls.DEFAULT_WEATHER_TEXT)
     
     @classmethod

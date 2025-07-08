@@ -89,6 +89,19 @@ class WhatsAppTemplates:
         Template: recordatorio_24h (HXf79f6f380e09de4f1b953f7045c6aa19)
         Variables: {{1}} name, {{2}} origin, {{3}} departure_time, {{4}} weather, {{5}} destination, {{6}} additional_info
         """
+        from ..config.messages import MessageConfig
+        from ..utils.timezone_utils import format_departure_time_local
+        
+        # FIXED: Use format_departure_time_local for 24h reminders to avoid grammatical errors
+        # This gives clean format like "8 Jul 11:30 hs" instead of "Mar 8 Jul 11:30 hs"
+        departure_datetime = trip_data.get("departure_date")
+        if isinstance(departure_datetime, str):
+            from datetime import datetime
+            departure_datetime = datetime.fromisoformat(departure_datetime.replace('Z', '+00:00'))
+        
+        # Use local time formatting without weekday for 24h reminders
+        formatted_departure = format_departure_time_local(departure_datetime, trip_data["origin_iata"])
+        
         template_info = cls.TEMPLATES[NotificationType.REMINDER_24H]
         return {
             "template_sid": template_info["sid"],
@@ -96,7 +109,7 @@ class WhatsAppTemplates:
             "template_variables": {
                 "1": trip_data["client_name"],        # name
                 "2": trip_data["origin_iata"],        # origin
-                "3": trip_data["departure_time"],     # departure_time
+                "3": formatted_departure,             # departure_time (clean format without weekday)
                 "4": weather_info or MessageConfig.get_weather_text(),   # weather
                 "5": trip_data["destination_iata"],   # destination
                 "6": additional_info or MessageConfig.get_good_trip_text() # additional_info

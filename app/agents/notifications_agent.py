@@ -195,7 +195,7 @@ class NotificationsAgent:
             for trip in reminder_trips:
                 # Check if reminder already sent
                 history = await self.db_client.get_notification_history(
-                    trip.id, NotificationType.REMINDER_24H
+                    trip.id, NotificationType.REMINDER_24H.value.upper()
                 )
                 
                 if any(log.delivery_status == "SENT" for log in history):
@@ -212,15 +212,30 @@ class NotificationsAgent:
                     )
                     continue
                 
-                # Send notification using configurable messages
+                # Send notification using configurable messages with real weather
                 from ..config.messages import MessageConfig
+                
+                # Get real weather for destination
+                agency_id_str = str(trip.agency_id) if hasattr(trip, 'agency_id') else None
+                try:
+                    weather_info = await MessageConfig.get_weather_text_async(
+                        trip.destination_iata, 
+                        agency_id_str
+                    )
+                except Exception as e:
+                    logger.warning("weather_fetch_failed_using_fallback", 
+                        trip_id=str(trip.id),
+                        destination_iata=trip.destination_iata,
+                        error=str(e)
+                    )
+                    weather_info = MessageConfig.get_weather_text(agency_id_str)
                 
                 result = await self.send_notification(
                     trip=trip,
                     notification_type=NotificationType.REMINDER_24H,
                     extra_data={
-                        "weather_info": MessageConfig.get_weather_text(str(trip.agency_id) if hasattr(trip, 'agency_id') else None),
-                        "additional_info": MessageConfig.get_good_trip_text(str(trip.agency_id) if hasattr(trip, 'agency_id') else None)
+                        "weather_info": weather_info,
+                        "additional_info": MessageConfig.get_good_trip_text(agency_id_str)
                     }
                 )
                 
@@ -764,7 +779,7 @@ class NotificationsAgent:
                 try:
                     # Check if we already sent landing notification
                     history = await self.db_client.get_notification_history(
-                        trip.id, "LANDING_WELCOME"
+                        trip.id, NotificationType.LANDING_WELCOME.value.upper()
                     )
                     
                     if any(log.delivery_status == "SENT" for log in history):
@@ -787,46 +802,64 @@ class NotificationsAgent:
                         )
                         
                         if is_landed:
-                            # Save the landed status to history
-                            await self._save_flight_status(trip, current_status)
-                        
-                        # Check quiet hours before sending
-                        is_quiet_hours = is_quiet_hours_local(now_utc, trip.destination_iata)
-                        
-                        if not is_quiet_hours:
-                            # Send landing welcome notification
-                            logger.info("landing_detected_sending_welcome",
+                            # CRITICAL FIX: Update trip status to LANDED to prevent re-polling
+                            await self.db_client.update_trip_status(trip.id, {"status": "LANDED"})
+                            logger.info("trip_status_updated_to_landed_in_landing_detection", 
                                 trip_id=str(trip.id),
                                 flight_number=trip.flight_number,
-                                status=current_status.status
+                                flight_status=current_status.status
                             )
                             
-                            # Use proper LANDING_WELCOME template
-                            from ..config.messages import MessageConfig
+                            # Save the landed status to history
+                            await self._save_flight_status(trip, current_status)
                             
-                            result = await self.send_notification(
-                                trip=trip,
-                                notification_type=NotificationType.LANDING_WELCOME,
-                                extra_data={
-                                    "hotel_address": MessageConfig.get_hotel_placeholder(str(trip.agency_id) if hasattr(trip, 'agency_id') else None)
-                                }
-                            )
+                            # Check quiet hours before sending
+                            is_quiet_hours = is_quiet_hours_local(now_utc, trip.destination_iata)
                             
-                            if result.success:
-                                landed_count += 1
-                                logger.info("landing_welcome_sent",
+                            if not is_quiet_hours:
+                                # Send landing welcome notification
+                                logger.info("landing_detected_sending_welcome",
                                     trip_id=str(trip.id),
-                                    message_sid=result.data.get("message_sid") if result.data else None
+                                    flight_number=trip.flight_number,
+                                    status=current_status.status,
+                                    progress_percent=current_status.progress_percent,
+                                    actual_in=current_status.actual_in
                                 )
+                                
+                                # Use proper LANDING_WELCOME template
+                                from ..config.messages import MessageConfig
+                                
+                                result = await self.send_notification(
+                                    trip=trip,
+                                    notification_type=NotificationType.LANDING_WELCOME,
+                                    extra_data={
+                                        "hotel_address": MessageConfig.get_hotel_placeholder(str(trip.agency_id) if hasattr(trip, 'agency_id') else None)
+                                    }
+                                )
+                                
+                                if result.success:
+                                    landed_count += 1
+                                    logger.info("landing_welcome_sent",
+                                        trip_id=str(trip.id),
+                                        message_sid=result.data.get("message_sid") if result.data else None
+                                    )
+                                else:
+                                    logger.error("landing_welcome_failed",
+                                        trip_id=str(trip.id),
+                                        error=result.error
+                                    )
                             else:
-                                logger.error("landing_welcome_failed",
+                                logger.info("landing_notification_deferred_quiet_hours", 
                                     trip_id=str(trip.id),
-                                    error=result.error
+                                    destination_iata=trip.destination_iata
                                 )
                         else:
-                            logger.info("landing_notification_deferred_quiet_hours", 
+                            logger.debug("flight_not_landed_yet",
                                 trip_id=str(trip.id),
-                                destination_iata=trip.destination_iata
+                                flight_number=trip.flight_number,
+                                status=current_status.status,
+                                progress_percent=current_status.progress_percent,
+                                actual_in=current_status.actual_in
                             )
                     
                 except Exception as e:

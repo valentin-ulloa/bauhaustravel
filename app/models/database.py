@@ -52,6 +52,7 @@ class Trip(BaseModel):
     client_description: Optional[str] = None
     agency_id: Optional[UUID] = None
     gate: Optional[str] = None  # Flight departure gate (e.g., "A12", "B3")
+    estimated_arrival: Optional[datetime] = None  # Estimated arrival time from AeroAPI
 
 
 class NotificationLog(BaseModel):

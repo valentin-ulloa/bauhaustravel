@@ -963,30 +963,85 @@ async def test_async_notification():
 async def test_flight_notification(trip_id: str):
     """
     Test endpoint to send a real notification for a specific trip.
-    Use this to validate the complete notification flow.
+    Intelligently selects notification type based on departure timing.
     """
     try:
         from app.agents.notifications_agent import NotificationsAgent
         from app.agents.notifications_templates import NotificationType
+        from app.db.supabase_client import SupabaseDBClient
         from uuid import UUID
+        from datetime import datetime, timezone, timedelta
         
-        agent = NotificationsAgent()
+        # Get trip details to determine appropriate notification type
+        db_client = SupabaseDBClient()
+        trip_result = await db_client.get_trip_by_id(UUID(trip_id))
         
-        # Send a test notification
-        result = await agent.send_single_notification(
-            trip_id=UUID(trip_id),
-            notification_type=NotificationType.REMINDER_24H,
-            extra_data={
+        if not trip_result.success:
+            return {
+                "status": "error",
+                "trip_id": trip_id,
+                "error": f"Trip not found: {trip_result.error}"
+            }
+        
+        trip_data = trip_result.data
+        departure_date = datetime.fromisoformat(trip_data["departure_date"].replace('Z', '+00:00'))
+        now_utc = datetime.now(timezone.utc)
+        time_to_departure = departure_date - now_utc
+        hours_to_departure = time_to_departure.total_seconds() / 3600
+        
+        # INTELLIGENT NOTIFICATION TYPE SELECTION based on timing
+        if hours_to_departure <= 0:
+            # Flight has already departed - send landing welcome if not landed
+            notification_type = NotificationType.LANDING_WELCOME
+            extra_data = {"hotel_address": "tu alojamiento reservado"}
+        elif hours_to_departure <= 1:
+            # Less than 1 hour - send boarding notification
+            notification_type = NotificationType.BOARDING
+            extra_data = {"gate": "Ver pantallas del aeropuerto"}
+        elif hours_to_departure <= 4:
+            # 1-4 hours - send departure confirmation (not 24h reminder!)
+            notification_type = NotificationType.RESERVATION_CONFIRMATION
+            extra_data = {}
+        elif 20 <= hours_to_departure <= 28:
+            # 20-28 hours - appropriate for 24h reminder
+            notification_type = NotificationType.REMINDER_24H
+            extra_data = {
                 "weather_info": "buen clima para volar",
                 "additional_info": "¡Buen viaje!"
             }
+        else:
+            # Outside normal notification windows
+            return {
+                "status": "not_applicable",
+                "trip_id": trip_id,
+                "hours_to_departure": round(hours_to_departure, 2),
+                "message": f"No appropriate notification for {round(hours_to_departure, 2)} hours to departure",
+                "valid_windows": {
+                    "boarding": "< 1 hour",
+                    "confirmation": "1-4 hours", 
+                    "24h_reminder": "20-28 hours",
+                    "landing_welcome": "after departure"
+                }
+            }
+        
+        agent = NotificationsAgent()
+        
+        # Send intelligently selected notification
+        result = await agent.send_single_notification(
+            trip_id=UUID(trip_id),
+            notification_type=notification_type,
+            extra_data=extra_data
         )
         
         await agent.close()
+        await db_client.close()
         
         return {
             "status": "notification_sent" if result.success else "notification_failed",
             "trip_id": trip_id,
+            "notification_type": notification_type,
+            "hours_to_departure": round(hours_to_departure, 2),
+            "timing_logic": f"Selected {notification_type} for {round(hours_to_departure, 2)}h to departure",
             "result": result.data if result.success else result.error,
             "async_system": "operational",
             "timestamp": datetime.now(timezone.utc).isoformat()
