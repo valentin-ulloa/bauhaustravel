@@ -254,15 +254,22 @@ class NotificationsAgent:
                         await self._process_flight_change_simplified(trip, change, current_status)
                         notifications_sent += 1
                     
-                    # UNIFIED next_check_at calculation
-                    estimated_arrival = None
-                    if current_status.estimated_in:
-                        try:
-                            estimated_arrival = datetime.fromisoformat(
-                                current_status.estimated_in.replace('Z', '+00:00')
-                            )
-                        except:
-                            pass
+                    # INTELLIGENT arrival calculation using cascading fallback logic
+                    from app.utils.flight_schedule_utils import calculate_intelligent_arrival_time
+                    
+                    estimated_arrival = calculate_intelligent_arrival_time(
+                        departure_time=departure_time,
+                        current_status=current_status,
+                        trip_metadata=trip.metadata
+                    )
+                    
+                    # Fallback to database if intelligent calculation fails
+                    if not estimated_arrival and hasattr(trip, 'estimated_arrival') and trip.estimated_arrival:
+                        estimated_arrival = trip.estimated_arrival
+                        logger.debug("using_database_estimated_arrival_ultimate_fallback", 
+                            trip_id=str(trip.id),
+                            estimated_arrival=estimated_arrival.isoformat()
+                        )
                     
                     next_check = calculate_unified_next_check(
                         trip.departure_date, 
@@ -545,12 +552,65 @@ class NotificationsAgent:
                 extra_data["new_departure_time"] = "Por confirmar"
                 
         elif notification_type == "boarding":
-            # PRIORITY: Use real gate data from current status or DB
-            gate_info = (
-                current_status.gate_origin or 
-                getattr(trip, 'gate', None) or
-                "Ver pantallas del aeropuerto"
-            )
+            # CRITICAL FIX: Always fetch fresh gate data before boarding notification
+            gate_info = None
+            
+            # 1. Check if trip.gate already has value
+            trip_gate = getattr(trip, 'gate', None)
+            if trip_gate and trip_gate.strip():
+                gate_info = trip_gate
+                logger.info("using_existing_gate_from_db", 
+                    trip_id=str(trip.id), 
+                    gate=gate_info
+                )
+            else:
+                # 2. No gate in DB - fetch fresh from AeroAPI
+                logger.info("fetching_fresh_gate_from_aeroapi", 
+                    trip_id=str(trip.id),
+                    reason="trip.gate is empty"
+                )
+                
+                try:
+                    departure_date_str = trip.departure_date.strftime("%Y-%m-%d")
+                    fresh_status = await self.aeroapi_client.get_flight_status(
+                        trip.flight_number, 
+                        departure_date_str
+                    )
+                    
+                    if fresh_status and fresh_status.gate_origin:
+                        gate_info = fresh_status.gate_origin
+                        
+                        # 3. Update trip.gate immediately in database
+                        await self.db_client.update_trip_status(
+                            trip.id, 
+                            {"gate": gate_info}
+                        )
+                        
+                        logger.info("updated_gate_from_aeroapi", 
+                            trip_id=str(trip.id),
+                            new_gate=gate_info,
+                            flight_number=trip.flight_number
+                        )
+                    else:
+                        logger.warning("no_gate_available_from_aeroapi", 
+                            trip_id=str(trip.id),
+                            flight_number=trip.flight_number
+                        )
+                        
+                except Exception as e:
+                    logger.error("aeroapi_fetch_failed_for_boarding", 
+                        trip_id=str(trip.id),
+                        error=str(e)
+                    )
+            
+            # 4. Final fallback if no gate available anywhere
+            if not gate_info:
+                gate_info = "Ver pantallas del aeropuerto"
+                logger.info("using_fallback_gate_message", 
+                    trip_id=str(trip.id),
+                    reason="no gate available from DB or AeroAPI"
+                )
+            
             extra_data["gate"] = gate_info
         
         return extra_data

@@ -14,7 +14,7 @@ logger = structlog.get_logger(__name__)
 
 @dataclass
 class FlightStatus:
-    """Simplified flight status data from AeroAPI"""
+    """Enhanced flight status data from AeroAPI with duration intelligence"""
     ident: str
     status: str
     estimated_out: Optional[str] = None
@@ -31,6 +31,11 @@ class FlightStatus:
     destination_iata: Optional[str] = None
     aircraft_type: Optional[str] = None
     progress_percent: int = 0
+    # NEW: Duration and scheduling fields for intelligent arrival estimation
+    scheduled_out: Optional[str] = None          # Scheduled departure time
+    scheduled_in: Optional[str] = None           # Scheduled arrival time  
+    scheduled_block_time_minutes: Optional[int] = None  # Total block time in minutes
+    filed_ete: Optional[int] = None              # Filed Estimated Time Enroute (minutes)
 
 @dataclass
 class CacheEntry:
@@ -254,7 +259,7 @@ class AeroAPIClient:
             
             flight = flights[0]  # Most recent flight
             
-            # CORRECTED field mapping based on AeroAPI v4 documentation
+            # ENHANCED field mapping with duration intelligence 
             status = FlightStatus(
                 ident=flight.get("ident", flight_number),
                 status=flight.get("status", "Unknown"),
@@ -269,7 +274,12 @@ class AeroAPIClient:
                 cancelled=flight.get("cancelled", False),
                 diverted=flight.get("diverted", False),
                 progress_percent=flight.get("progress_percent", 0),
-                aircraft_type=flight.get("aircraft_type")
+                aircraft_type=flight.get("aircraft_type"),
+                # NEW: Capture scheduling and duration data from AeroAPI
+                scheduled_out=flight.get("scheduled_out"),
+                scheduled_in=flight.get("scheduled_on"),       # AeroAPI uses "scheduled_on" for arrival
+                scheduled_block_time_minutes=flight.get("scheduled_block_time_minutes"),
+                filed_ete=flight.get("filed_ete")
             )
             
             # Extract airport codes safely
