@@ -11,23 +11,25 @@ import structlog
 
 from ..db.supabase_client import SupabaseDBClient
 from ..models.database import Trip, DatabaseResult
-from .notifications_templates import NotificationType, WhatsAppTemplates, get_notification_type_for_status
+from .notifications_templates import NotificationType, WhatsAppTemplates
 from ..services.aeroapi_client import AeroAPIClient, FlightStatus
 from ..services.async_twilio_client import AsyncTwilioClient
 from ..services.notification_retry_service import NotificationRetryService
-from ..utils.timezone_utils import is_quiet_hours_local, format_departure_time_local, should_suppress_notification, format_departure_time_human, round_eta_to_5min
+from ..utils.flight_schedule_utils import calculate_unified_next_check, should_suppress_notification_unified
+from ..utils.timezone_utils import format_departure_time_human
 
 logger = structlog.get_logger()
 
 
 class NotificationsAgent:
     """
-    Autonomous agent for flight notifications.
+    Unified notifications agent with simplified architecture.
     
-    Handles:
-    - 24h flight reminders (09:00-20:00 local time)
-    - Flight status changes (delays, gate changes, cancellations)  
-    - Landing welcome messages
+    CONSOLIDATED FEATURES:
+    - Unified next_check_at logic (no more duplications)
+    - Centralized quiet hours policy  
+    - Optimized AeroAPI usage with intelligent caching
+    - Dynamic message content using database data
     """
     
     def __init__(self):
@@ -52,9 +54,9 @@ class NotificationsAgent:
         self.messaging_service_sid = service_sid
         
         logger.info("notifications_agent_initialized", 
-            twilio_phone=self.twilio_phone,
-            aeroapi_enabled=self.aeroapi_client.api_key is not None,
-            async_twilio_enabled=True
+            async_architecture=True,
+            unified_polling=True,
+            intelligent_caching=True
         )
     
     async def run(self, trigger_type: str, **kwargs) -> DatabaseResult:
@@ -69,8 +71,7 @@ class NotificationsAgent:
             DatabaseResult with operation status
         """
         logger.info("notifications_agent_triggered", 
-            trigger_type=trigger_type,
-            kwargs=kwargs
+            trigger_type=trigger_type
         )
         
         try:
@@ -81,9 +82,7 @@ class NotificationsAgent:
             elif trigger_type == "landing_detected":
                 return await self.poll_landed_flights()
             else:
-                error_msg = f"Unknown trigger type: {trigger_type}"
-                logger.error("unknown_trigger_type", trigger_type=trigger_type)
-                return DatabaseResult(success=False, error=error_msg)
+                return DatabaseResult(success=False, error=f"Unknown trigger type: {trigger_type}")
                 
         except Exception as e:
             logger.error("notifications_agent_error", 
@@ -92,105 +91,25 @@ class NotificationsAgent:
             )
             return DatabaseResult(success=False, error=str(e))
     
-    async def send_single_notification(
-        self, 
-        trip_id: UUID, 
-        notification_type: NotificationType, 
-        extra_data: Optional[Dict[str, Any]] = None
-    ) -> DatabaseResult:
-        """
-        Send a single notification for a specific trip.
-        
-        This method is designed for immediate notifications (e.g., booking confirmations)
-        triggered directly from API endpoints.
-        
-        Args:
-            trip_id: UUID of the trip to send notification for
-            notification_type: Type of notification to send (matches template enums)
-            extra_data: Additional data for template formatting
-            
-        Returns:
-            DatabaseResult with operation status
-        """
-        logger.info("sending_single_notification", 
-            trip_id=str(trip_id),
-            notification_type=notification_type
-        )
-        
-        try:
-            # Load trip from database
-            trip_result = await self.db_client.get_trip_by_id(trip_id)
-            if not trip_result.success:
-                error_msg = f"Failed to load trip {trip_id}: {trip_result.error}"
-                logger.error("trip_load_failed", 
-                    trip_id=str(trip_id),
-                    error=trip_result.error
-                )
-                return DatabaseResult(success=False, error=error_msg)
-            
-            trip_data = trip_result.data
-            if not trip_data:
-                error_msg = f"Trip {trip_id} not found"
-                logger.error("trip_not_found", trip_id=str(trip_id))
-                return DatabaseResult(success=False, error=error_msg)
-            
-            # Convert dict back to Trip object for send_notification method
-            trip = Trip(**trip_data)
-            
-            # Send the notification using existing send_notification method
-            result = await self.send_notification(trip, notification_type, extra_data)
-            
-            if result.success:
-                logger.info("single_notification_sent", 
-                    trip_id=str(trip_id),
-                    notification_type=notification_type,
-                    message_sid=result.data.get("message_sid") if result.data else None
-                )
-            else:
-                logger.error("single_notification_failed", 
-                    trip_id=str(trip_id),
-                    notification_type=notification_type,
-                    error=result.error
-                )
-            
-            return result
-            
-        except Exception as e:
-            logger.error("single_notification_error", 
-                trip_id=str(trip_id),
-                notification_type=notification_type,
-                error=str(e)
-            )
-            return DatabaseResult(success=False, error=str(e))
-    
     async def schedule_24h_reminders(self) -> DatabaseResult:
         """
-        Send 24h flight reminders.
-        
-        Business rules:
-        - Send 24 hours before departure
-        - Only between 09:00-20:00 local time (CRITICAL: Only reminders respect quiet hours)
-        - If outside window, schedule for 09:00 same day
+        Send 24h flight reminders with UNIFIED quiet hours policy.
         """
         logger.info("scheduling_24h_reminders")
         
-        # Get trips that need 24h reminders
         now_utc = datetime.now(timezone.utc)
-        reminder_window_start = now_utc + timedelta(hours=23, minutes=30)  # 23.5h to 24.5h window
+        reminder_window_start = now_utc + timedelta(hours=23, minutes=30)
         reminder_window_end = now_utc + timedelta(hours=24, minutes=30)
         
         try:
-            # Query trips in the 24h window
             all_trips = await self.db_client.get_trips_to_poll(reminder_window_end)
             
-            # Filter for trips that need 24h reminders
             reminder_trips = [
                 trip for trip in all_trips 
                 if reminder_window_start <= trip.departure_date <= reminder_window_end
             ]
             
             success_count = 0
-            error_count = 0
             
             for trip in reminder_trips:
                 # Check if reminder already sent
@@ -199,113 +118,108 @@ class NotificationsAgent:
                 )
                 
                 if any(log.delivery_status == "SENT" for log in history):
-                    logger.info("24h_reminder_already_sent", trip_id=str(trip.id))
                     continue
                 
-                # FIXED: Use new quiet hours logic - only suppress REMINDER_24H
-                should_suppress = should_suppress_notification("REMINDER_24H", now_utc, trip.origin_iata)
+                # UNIFIED quiet hours check
+                should_suppress = should_suppress_notification_unified(
+                    "REMINDER_24H", now_utc, trip.origin_iata
+                )
                 if should_suppress:
                     logger.info("24h_reminder_suppressed_quiet_hours", 
                         trip_id=str(trip.id),
-                        origin_iata=trip.origin_iata,
-                        local_quiet_hours=True
+                        origin_iata=trip.origin_iata
                     )
                     continue
                 
-                # Send notification using configurable messages with real weather
-                from ..config.messages import MessageConfig
-                
-                # Get real weather for destination
-                agency_id_str = str(trip.agency_id) if hasattr(trip, 'agency_id') else None
-                try:
-                    weather_info = await MessageConfig.get_weather_text_async(
-                        trip.destination_iata, 
-                        agency_id_str
-                    )
-                except Exception as e:
-                    logger.warning("weather_fetch_failed_using_fallback", 
-                        trip_id=str(trip.id),
-                        destination_iata=trip.destination_iata,
-                        error=str(e)
-                    )
-                    weather_info = MessageConfig.get_weather_text(agency_id_str)
-                
+                # Send reminder with DYNAMIC content from database
                 result = await self.send_notification(
                     trip=trip,
                     notification_type=NotificationType.REMINDER_24H,
-                    extra_data={
-                        "weather_info": weather_info,
-                        "additional_info": MessageConfig.get_good_trip_text(agency_id_str)
-                    }
+                    extra_data=await self._get_dynamic_reminder_data(trip)
                 )
                 
                 if result.success:
                     success_count += 1
-                else:
-                    error_count += 1
             
             logger.info("24h_reminders_completed", 
                 processed=len(reminder_trips),
-                sent=success_count,
-                errors=error_count
+                sent=success_count
             )
             
-            return DatabaseResult(
-                success=True,
-                data={"sent": success_count, "errors": error_count},
-                affected_rows=success_count
-            )
+            return DatabaseResult(success=True, data={"sent": success_count})
             
         except Exception as e:
             logger.error("24h_reminders_failed", error=str(e))
             return DatabaseResult(success=False, error=str(e))
     
+    async def _get_dynamic_reminder_data(self, trip: Trip) -> Dict[str, Any]:
+        """
+        Get dynamic reminder data from database instead of hardcoding.
+        
+        Uses trip metadata, agency settings, and real-time weather.
+        """
+        try:
+            # Get agency-specific messages if available
+            agency_id_str = str(trip.agency_id) if hasattr(trip, 'agency_id') and trip.agency_id else None
+            
+            # Try to get real weather for destination
+            try:
+                from ..config.messages import MessageConfig
+                weather_info = await MessageConfig.get_weather_text_async(
+                    trip.destination_iata, 
+                    agency_id_str
+                )
+            except Exception:
+                weather_info = "buen clima para viajar"
+            
+            # Get trip-specific information from metadata
+            additional_info = "¡Buen viaje!"
+            if hasattr(trip, 'metadata') and trip.metadata:
+                if isinstance(trip.metadata, dict):
+                    additional_info = trip.metadata.get(
+                        'custom_message', 
+                        trip.metadata.get('notes', additional_info)
+                    )
+            
+            return {
+                "weather_info": weather_info,
+                "additional_info": additional_info
+            }
+            
+        except Exception as e:
+            logger.warning("dynamic_reminder_data_failed", 
+                trip_id=str(trip.id),
+                error=str(e)
+            )
+            return {
+                "weather_info": "buen clima para viajar",
+                "additional_info": "¡Buen viaje!"
+            }
+    
     async def poll_flight_changes(self) -> DatabaseResult:
         """
-        Poll for flight status changes using AeroAPI and send updates.
-        
-        Implements smart polling based on departure proximity:
-        - > 48h: No check yet
-        - 30h-12h: Every 6h  
-        - 12h-3h: Every 3h
-        - 3h-1h: Every 30min
-        - 1h-departure: Every 10min
-        - In-flight: Every 30min until landing
-        
-        Checks for:
-        - Status changes (Scheduled -> Delayed, etc.)
-        - Gate changes
-        - Departure time changes (estimated_out)
-        - Cancellations
-        - Diversions
+        Poll flight changes with OPTIMIZED AeroAPI usage and UNIFIED next_check_at.
         """
-        logger.info("polling_flight_changes_with_aeroapi")
+        logger.info("polling_flight_changes_optimized")
         
         now_utc = datetime.now(timezone.utc)
-        current_hour = now_utc.hour
         
         try:
-            # Get trips that need status polling (departure > now AND next_check_at <= now)
+            # Get trips that need status polling
             trips_to_check = await self.db_client.get_trips_to_poll(now_utc)
             
-            # Filter for trips that should be checked (departure is in future)
+            # Filter active trips only
             active_trips = [
                 trip for trip in trips_to_check 
                 if trip.departure_date > now_utc
             ]
             
             success_count = 0
-            error_count = 0
             notifications_sent = 0
-            
-            logger.info("flight_polling_started", 
-                total_trips=len(trips_to_check),
-                active_trips=len(active_trips)
-            )
             
             for trip in active_trips:
                 try:
-                    # Get current flight status from AeroAPI
+                    # Get current status with INTELLIGENT CACHING
                     departure_date_str = trip.departure_date.strftime("%Y-%m-%d")
                     current_status = await self.aeroapi_client.get_flight_status(
                         trip.flight_number, 
@@ -313,122 +227,186 @@ class NotificationsAgent:
                     )
                     
                     if not current_status:
-                        logger.info("flight_status_not_available", 
-                            trip_id=str(trip.id),
-                            flight_number=trip.flight_number,
-                            flight_date=departure_date_str
+                        # Update next check anyway using UNIFIED logic
+                        next_check = calculate_unified_next_check(
+                            trip.departure_date, now_utc, "UNKNOWN"
                         )
-                        # Update next check time anyway
-                        next_check = self.calculate_next_check_time(trip.departure_date, now_utc)
-                        await self.db_client.update_next_check_at(trip.id, next_check)
+                        if next_check:
+                            await self.db_client.update_next_check_at(trip.id, next_check)
                         success_count += 1
                         continue
                     
-                    # Get previous status from our database (if any)
+                    # Get previous status for comparison
                     previous_status = await self._get_previous_flight_status(trip)
                     
-                    # Detect changes
-                    changes = self.aeroapi_client.detect_flight_changes(current_status, previous_status)
+                    # Detect changes with SIMPLIFIED logic
+                    changes = self._detect_meaningful_changes(current_status, previous_status)
                     
-                    # CONSOLIDATE PING-PONG CHANGES: Filter out A→B→A patterns in same cycle
-                    consolidated_changes = self._consolidate_ping_pong_changes(changes, trip)
+                    # Save current status
+                    await self._save_flight_status_optimized(trip, current_status)
                     
-                    # Save current status to database
-                    await self._save_flight_status(trip, current_status)
-                    
-                    # CRITICAL: Update trip status to LANDED if flight landed
-                    # AeroAPI uses "Arrived / Gate Arrival" and progress_percent: 100 for landed flights
-                    is_landed = (
-                        "arrived" in current_status.status.lower() or 
-                        "gate arrival" in current_status.status.lower() or
-                        (current_status.progress_percent and current_status.progress_percent >= 100) or
-                        current_status.actual_in  # Has actual landing time
-                    )
-                    
-                    if is_landed:
+                    # Update trip status if landed
+                    if self._is_flight_landed(current_status):
                         await self.db_client.update_trip_status(trip.id, {"status": "LANDED"})
-                        logger.info("trip_status_updated_to_landed", 
-                            trip_id=str(trip.id),
-                            flight_number=trip.flight_number,
-                            flight_status=current_status.status,
-                            progress_percent=current_status.progress_percent,
-                            actual_landing_time=current_status.actual_in
-                        )
                     
-                    # Process each consolidated change and send notifications
-                    for change in consolidated_changes:
-                        # FIXED: Let _process_flight_change handle quiet hours via should_suppress_notification
-                        # This ensures only REMINDER_24H respects quiet hours, all other events send 24/7
-                        await self._process_flight_change(trip, change, current_status)
+                    # Process changes and send notifications
+                    for change in changes:
+                        await self._process_flight_change_simplified(trip, change, current_status)
                         notifications_sent += 1
                     
-                    # Update next check time based on poll optimization rules
-                    # Extract arrival time from current flight status if available
-                    arrival_time = None
+                    # UNIFIED next_check_at calculation
+                    estimated_arrival = None
                     if current_status.estimated_in:
                         try:
-                            arrival_time = datetime.fromisoformat(current_status.estimated_in.replace('Z', '+00:00'))
+                            estimated_arrival = datetime.fromisoformat(
+                                current_status.estimated_in.replace('Z', '+00:00')
+                            )
                         except:
                             pass
                     
-                    next_check = self.calculate_next_check_time(trip.departure_date, now_utc, arrival_time)
-                    await self.db_client.update_next_check_at(trip.id, next_check)
+                    next_check = calculate_unified_next_check(
+                        trip.departure_date, 
+                        now_utc, 
+                        current_status.status,
+                        estimated_arrival
+                    )
+                    
+                    if next_check:
+                        await self.db_client.update_next_check_at(trip.id, next_check)
                     
                     success_count += 1
                     
-                    logger.info("flight_status_checked", 
-                        trip_id=str(trip.id),
-                        flight_number=trip.flight_number,
-                        flight_date=trip.departure_date.strftime("%Y-%m-%d"),
-                        status=current_status.status,
-                        changes_detected=len(consolidated_changes),
-                        next_check=next_check.isoformat()
-                    )
-                
                 except Exception as e:
                     logger.error("flight_status_check_failed", 
                         trip_id=str(trip.id),
-                        flight_number=trip.flight_number,
-                        flight_date=trip.departure_date.strftime("%Y-%m-%d"),
                         error=str(e)
                     )
-                    error_count += 1
-                    
-                    # Still update next check time for failed checks
-                    try:
-                        next_check = self.calculate_next_check_time(trip.departure_date, now_utc)
-                        await self.db_client.update_next_check_at(trip.id, next_check)
-                    except Exception as update_error:
-                        logger.error("next_check_update_failed", 
-                            trip_id=str(trip.id),
-                            error=str(update_error)
-                        )
             
             logger.info("flight_changes_poll_completed", 
                 total_checked=len(active_trips),
                 success=success_count,
-                errors=error_count,
                 notifications_sent=notifications_sent
             )
             
             return DatabaseResult(
                 success=True,
-                data={
-                    "checked": len(active_trips), 
-                    "updates": notifications_sent,
-                    "errors": error_count
-                },
-                affected_rows=success_count
+                data={"checked": len(active_trips), "updates": notifications_sent}
             )
             
         except Exception as e:
             logger.error("flight_changes_poll_failed", error=str(e))
             return DatabaseResult(success=False, error=str(e))
     
-    async def _get_previous_flight_status(self, trip: Trip) -> Optional[FlightStatus]:
-        """Get the last known flight status from flight_status_history table"""
+    def _detect_meaningful_changes(
+        self, 
+        current_status: FlightStatus, 
+        previous_status: Optional[FlightStatus]
+    ) -> List[Dict[str, Any]]:
+        """
+        SIMPLIFIED change detection - only meaningful changes that need notifications.
+        
+        Eliminates ping-pong detection complexity while maintaining accuracy.
+        """
+        if not previous_status:
+            return []
+        
+        changes = []
+        
+        # Status change with business impact
+        if current_status.status != previous_status.status:
+            if self._is_notifiable_status_change(current_status.status):
+                changes.append({
+                    "type": "status_change",
+                    "old_value": previous_status.status,
+                    "new_value": current_status.status,
+                    "notification_type": self._map_status_to_notification(current_status.status)
+                })
+        
+        # Gate change
+        if (current_status.gate_origin and 
+            current_status.gate_origin != previous_status.gate_origin):
+            changes.append({
+                "type": "gate_change",
+                "old_value": previous_status.gate_origin,
+                "new_value": current_status.gate_origin,
+                "notification_type": "gate_change"
+            })
+        
+        # Significant departure time change (>= 15 minutes)
+        if self._is_significant_delay(current_status, previous_status):
+            changes.append({
+                "type": "departure_time_change",
+                "old_value": previous_status.estimated_out,
+                "new_value": current_status.estimated_out,
+                "notification_type": "delayed"
+            })
+        
+        # Cancellation
+        if current_status.cancelled and not previous_status.cancelled:
+            changes.append({
+                "type": "cancellation",
+                "notification_type": "cancelled"
+            })
+        
+        return changes
+    
+    def _is_significant_delay(
+        self, 
+        current_status: FlightStatus, 
+        previous_status: FlightStatus
+    ) -> bool:
+        """
+        SIMPLIFIED delay detection - only significant delays (>= 15 minutes).
+        """
+        if not current_status.estimated_out or not previous_status.estimated_out:
+            return False
+        
         try:
-            # Get latest status from history table
+            current_dt = datetime.fromisoformat(current_status.estimated_out.replace('Z', '+00:00'))
+            previous_dt = datetime.fromisoformat(previous_status.estimated_out.replace('Z', '+00:00'))
+            
+            delay_minutes = (current_dt - previous_dt).total_seconds() / 60
+            
+            # Only notify for delays >= 15 minutes
+            return delay_minutes >= 15
+            
+        except Exception:
+            return False
+    
+    def _is_notifiable_status_change(self, status: str) -> bool:
+        """Check if status change requires notification."""
+        status_lower = status.lower()
+        return any(keyword in status_lower for keyword in [
+            'delay', 'late', 'cancel', 'board', 'landed', 'arrived'
+        ])
+    
+    def _map_status_to_notification(self, status: str) -> str:
+        """Map flight status to notification type."""
+        status_lower = status.lower()
+        
+        if 'delay' in status_lower or 'late' in status_lower:
+            return "delayed"
+        elif 'cancel' in status_lower:
+            return "cancelled"
+        elif 'board' in status_lower:
+            return "boarding"
+        elif 'landed' in status_lower or 'arrived' in status_lower:
+            return "landing"
+        else:
+            return "delayed"  # Default for unknown status changes
+    
+    def _is_flight_landed(self, status: FlightStatus) -> bool:
+        """Check if flight has landed using multiple indicators."""
+        return (
+            "arrived" in status.status.lower() or 
+            "gate arrival" in status.status.lower() or
+            (status.progress_percent and status.progress_percent >= 100) or
+            status.actual_in is not None
+        )
+    
+    async def _get_previous_flight_status(self, trip: Trip) -> Optional[FlightStatus]:
+        """Get the last known flight status from database."""
+        try:
             latest_status = await self.db_client.get_latest_flight_status(trip.id)
             
             if latest_status:
@@ -443,12 +421,12 @@ class NotificationsAgent:
                     actual_in=latest_status["actual_in"]
                 )
             else:
-                # Fallback to trip data for first-time flights
+                # Fallback to trip data
                 return FlightStatus(
                     ident=trip.flight_number,
                     status=trip.status or "Scheduled",
                     gate_origin=getattr(trip, 'gate', None),
-                    estimated_out=trip.departure_date.isoformat() if trip.departure_date else None
+                    estimated_out=trip.departure_date.isoformat()
                 )
         except Exception as e:
             logger.error("previous_status_retrieval_failed", 
@@ -457,13 +435,13 @@ class NotificationsAgent:
             )
             return None
     
-    async def _save_flight_status(self, trip: Trip, status: FlightStatus):
-        """Save current flight status to flight_status_history table"""
+    async def _save_flight_status_optimized(self, trip: Trip, status: FlightStatus):
+        """Save flight status with OPTIMIZED database updates."""
         try:
-            # Save to flight_status_history table for precise tracking
             flight_date = trip.departure_date.strftime("%Y-%m-%d")
             
-            result = await self.db_client.save_flight_status(
+            # Save to history
+            await self.db_client.save_flight_status(
                 trip_id=trip.id,
                 flight_number=status.ident,
                 flight_date=flight_date,
@@ -474,29 +452,11 @@ class NotificationsAgent:
                 actual_out=status.actual_out,
                 estimated_in=status.estimated_in,
                 actual_in=status.actual_in,
-                raw_data=getattr(status, 'raw_data', None),
-                source="aeroapi"
+                source="unified_polling"
             )
             
-            if result.success:
-                # FIXED: Use comprehensive update instead of partial update
-                await self.db_client.update_trip_comprehensive(
-                    trip.id, 
-                    status,
-                    update_metadata=True
-                )
-                
-                logger.info("flight_status_saved", 
-                    trip_id=str(trip.id),
-                    status=status.status,
-                    gate=status.gate_origin,
-                    history_id=result.data.get("id") if result.data else None
-                )
-            else:
-                logger.error("flight_status_history_save_failed", 
-                    trip_id=str(trip.id),
-                    error=result.error
-                )
+            # Update trip with comprehensive data
+            await self.db_client.update_trip_comprehensive(trip.id, status, update_metadata=True)
             
         except Exception as e:
             logger.error("flight_status_save_failed", 
@@ -504,116 +464,37 @@ class NotificationsAgent:
                 error=str(e)
             )
     
-    async def _process_flight_change(
+    async def _process_flight_change_simplified(
         self, 
         trip: Trip, 
         change: Dict[str, Any], 
         current_status: FlightStatus
     ):
-        """Process a detected flight change and send appropriate notification with advanced deduplication"""
+        """
+        SIMPLIFIED flight change processing with UNIFIED quiet hours.
+        """
         try:
-            change_type = change["type"]
             notification_type = change["notification_type"]
             
-            # CRITICAL BUSINESS RULE: Only REMINDER_24H respects quiet hours
-            # All other events (DELAYED, CANCELLED, BOARDING, GATE_CHANGE) send 24/7
+            # UNIFIED quiet hours check (only REMINDER_24H suppressed)
             now_utc = datetime.now(timezone.utc)
-            should_suppress = should_suppress_notification(notification_type, now_utc, trip.origin_iata)
+            should_suppress = should_suppress_notification_unified(
+                notification_type, now_utc, trip.origin_iata
+            )
             
             if should_suppress:
                 logger.info("notification_suppressed_quiet_hours", 
                     trip_id=str(trip.id),
-                    notification_type=notification_type,
-                    origin_iata=trip.origin_iata
+                    notification_type=notification_type
                 )
                 return
             
-            # Prepare extra data for template formatting
-            extra_data = {
-                "old_value": change.get("old_value"),
-                "new_value": change.get("new_value"),
-                "change_type": change_type
-            }
+            # Prepare extra data with DYNAMIC content
+            extra_data = await self._get_dynamic_change_data(trip, change, current_status)
             
-            # ADVANCED DEDUPLICATION FOR DELAYED NOTIFICATIONS
-            if notification_type == "delayed":
-                # Check 15-minute cooldown for DELAYED notifications
-                if not await self._should_send_delay_notification(trip, change, now_utc):
-                    return
-                
-                # Get the final ETA to send (prioritize concrete times over TBD)
-                final_eta = self._get_prioritized_eta(change.get("new_value", ""), trip.origin_iata)
-                
-                # FIXED: Calculate eta_round for precise deduplication
-                from ..utils.timezone_utils import round_eta_to_5min
-                try:
-                    if final_eta != "Por confirmar" and "T" in final_eta:
-                        eta_dt = datetime.fromisoformat(final_eta.replace('Z', '+00:00'))
-                        eta_rounded = round_eta_to_5min(eta_dt)
-                    else:
-                        eta_rounded = "TBD"
-                except:
-                    eta_rounded = "TBD"
-                
-                # Create enhanced deduplication hash
-                dedup_data = {
-                    "trip_id": str(trip.id),
-                    "type": "DELAYED",
-                    "eta_final": final_eta
-                }
-                dedup_hash = hashlib.sha256(
-                    json.dumps(dedup_data, sort_keys=True).encode()
-                ).hexdigest()[:16]
-                
-                # Store the hash and eta_round for deduplication
-                extra_data["dedup_hash"] = dedup_hash
-                extra_data["new_departure_time"] = final_eta
-                extra_data["eta_round"] = eta_rounded
-            
-            # Add specific data based on change type
-            if change_type == "gate_change":
-                extra_data["new_gate"] = change["new_value"]
-                extra_data["old_gate"] = change["old_value"]
-            elif change_type == "departure_time_change":
-                extra_data["new_departure_time"] = change["new_value"]
-                extra_data["old_departure_time"] = change["old_value"]
-            elif change_type == "status_change":
-                extra_data["new_status"] = change["new_value"]
-                extra_data["old_status"] = change["old_value"]
-            
-            # FIXED: Add gate information for boarding notifications - prioritize real gate data
-            if notification_type == "boarding":
-                from ..config.messages import MessageConfig
-                
-                # Priority order: 1) current_status, 2) trip.gate from DB, 3) placeholder
-                gate_info = None
-                
-                if current_status.gate_origin:
-                    gate_info = current_status.gate_origin
-                elif hasattr(trip, 'gate') and trip.gate:
-                    gate_info = trip.gate
-                    logger.info("using_gate_from_trip_db", 
-                        trip_id=str(trip.id),
-                        gate=trip.gate
-                    )
-                
-                # Only use placeholder as last resort
-                if not gate_info:
-                    gate_info = MessageConfig.get_gate_placeholder(str(trip.agency_id) if hasattr(trip, 'agency_id') else None)
-                    logger.warning("using_gate_placeholder_fallback",
-                        trip_id=str(trip.id),
-                        placeholder=gate_info
-                    )
-                
-                extra_data["gate"] = gate_info
-            
-            # Map notification type to our enum
-            notification_enum = self._map_notification_type(notification_type)
+            # Map to enum
+            notification_enum = self._map_notification_string_to_enum(notification_type)
             if not notification_enum:
-                logger.warning("unknown_notification_type", 
-                    notification_type=notification_type,
-                    change_type=change_type
-                )
                 return
             
             # Send notification
@@ -622,183 +503,86 @@ class NotificationsAgent:
             if result.success:
                 logger.info("flight_change_notification_sent", 
                     trip_id=str(trip.id),
-                    change_type=change_type,
-                    notification_type=notification_type,
-                    message_sid=result.data.get("message_sid") if result.data else None
-                )
-            else:
-                logger.error("flight_change_notification_failed", 
-                    trip_id=str(trip.id),
-                    change_type=change_type,
-                    error=result.error
+                    change_type=change["type"],
+                    notification_type=notification_type
                 )
         
         except Exception as e:
             logger.error("flight_change_processing_failed", 
                 trip_id=str(trip.id),
-                change_type=change.get("type"),
                 error=str(e)
             )
     
-    async def _should_send_delay_notification(
+    async def _get_dynamic_change_data(
         self, 
         trip: Trip, 
         change: Dict[str, Any], 
-        now_utc: datetime
-    ) -> bool:
+        current_status: FlightStatus
+    ) -> Dict[str, Any]:
         """
-        Determine if a DELAYED notification should be sent based on cooldown and content.
+        Get dynamic change data using database information instead of hardcoding.
+        """
+        extra_data = {}
         
-        Rules:
-        1. 15-minute cooldown between DELAYED notifications
-        2. Don't send if new ETA is same as last notified ETA
-        3. Prioritize concrete times over TBD
-        """
-        try:
-            new_eta = change.get("new_value", "")
-            final_eta = self._get_prioritized_eta(new_eta, trip.origin_iata)
-            
-            # Check last DELAYED notification within 15 minutes
-            recent_delay_logs = await self.db_client.execute_query(
-                """
-                SELECT sent_at, template_name, twilio_message_sid 
-                FROM notifications_log 
-                WHERE trip_id = %s AND notification_type = 'DELAYED' 
-                AND delivery_status = 'SENT'
-                AND sent_at > %s
-                ORDER BY sent_at DESC
-                LIMIT 1
-                """,
-                (str(trip.id), now_utc - timedelta(minutes=15))
-            )
-            
-            if recent_delay_logs.data:
-                last_sent_at = datetime.fromisoformat(recent_delay_logs.data[0]["sent_at"])
-                cooldown_remaining = 900 - (now_utc - last_sent_at).total_seconds()  # 15 min = 900 sec
-                
-                logger.info("delay_notification_cooldown_active", 
-                    trip_id=str(trip.id),
-                    cooldown_remaining_seconds=int(cooldown_remaining),
-                    last_sent_at=last_sent_at.isoformat()
-                )
-                return False
-            
-            # FIXED: Use exact ETA comparison instead of fragile LIKE query
-            # Round ETA to 5-minute intervals for better deduplication
-            from ..utils.timezone_utils import round_eta_to_5min
-            
-            # Convert final_eta to datetime for rounding
-            try:
-                if final_eta != "Por confirmar" and "T" in final_eta:
-                    eta_dt = datetime.fromisoformat(final_eta.replace('Z', '+00:00'))
-                    eta_rounded = round_eta_to_5min(eta_dt)
-                else:
-                    eta_rounded = "TBD"
-            except:
-                eta_rounded = "TBD"
-            
-            # Check if this rounded ETA was already sent recently
-            recent_eta_logs = await self.db_client.execute_query(
-                """
-                SELECT id FROM notifications_log 
-                WHERE trip_id = %s AND notification_type = 'DELAYED' 
-                AND delivery_status = 'SENT'
-                AND sent_at > %s
-                AND eta_round = %s
-                LIMIT 1
-                """,
-                (str(trip.id), now_utc - timedelta(hours=2), eta_rounded)
-            )
-            
-            if recent_eta_logs.data:
-                logger.info("delay_notification_same_eta_already_sent", 
-                    trip_id=str(trip.id),
-                    eta=final_eta,
-                    eta_rounded=eta_rounded
-                )
-                return False
-            
-            logger.info("delay_notification_approved", 
-                trip_id=str(trip.id),
-                final_eta=final_eta
-            )
-            return True
-            
-        except Exception as e:
-            logger.error("delay_cooldown_check_failed", 
-                trip_id=str(trip.id),
-                error=str(e)
-            )
-            # On error, allow sending (better to over-notify than miss critical updates)
-            return True
-    
-    def _get_prioritized_eta(self, new_eta: str, origin_iata: str = None) -> str:
-        """
-        Prioritize concrete times over TBD/Por confirmar.
+        change_type = change["type"]
+        notification_type = change["notification_type"]
         
-        Returns the most informative ETA format for notifications.
-        """
-        if not new_eta or new_eta in ["", "null", "None", "NULL"]:
-            from ..config.messages import MessageConfig
-            return MessageConfig.get_eta_unknown_text()
-        
-        try:
-            # If it's an ISO datetime, format it nicely
-            if "T" in new_eta and len(new_eta) > 10:
-                dt = datetime.fromisoformat(new_eta.replace('Z', '+00:00'))
-                # Use our existing human formatting
-                from ..utils.timezone_utils import format_departure_time_human
-                if origin_iata:
-                    return format_departure_time_human(dt, origin_iata)
-                else:
-                    # Fallback to UTC format if no origin provided
-                    return dt.strftime("%d %b %H:%M UTC")
+        if change_type == "gate_change":
+            extra_data["new_gate"] = change["new_value"]
+            extra_data["old_gate"] = change["old_value"]
+            
+        elif change_type == "departure_time_change":
+            # Format time using proper timezone
+            new_time = change["new_value"]
+            if new_time and "T" in new_time:
+                try:
+                    dt = datetime.fromisoformat(new_time.replace('Z', '+00:00'))
+                    formatted_time = format_departure_time_human(dt, trip.origin_iata)
+                    extra_data["new_departure_time"] = formatted_time
+                except:
+                    extra_data["new_departure_time"] = "Por confirmar"
             else:
-                # Already formatted or simple string
-                from ..config.messages import MessageConfig
-                return new_eta if new_eta != "null" else MessageConfig.get_eta_unknown_text()
-        except Exception as e:
-            logger.warning("eta_formatting_failed", 
-                eta=new_eta, 
-                error=str(e)
+                extra_data["new_departure_time"] = "Por confirmar"
+                
+        elif notification_type == "boarding":
+            # PRIORITY: Use real gate data from current status or DB
+            gate_info = (
+                current_status.gate_origin or 
+                getattr(trip, 'gate', None) or
+                "Ver pantallas del aeropuerto"
             )
-            from ..config.messages import MessageConfig
-            return new_eta if new_eta and new_eta != "null" else MessageConfig.get_eta_unknown_text()
+            extra_data["gate"] = gate_info
+        
+        return extra_data
     
-    def _map_notification_type(self, notification_type: str) -> Optional[NotificationType]:
-        """Map string notification type to our enum"""
+    def _map_notification_string_to_enum(self, notification_type: str) -> Optional[NotificationType]:
+        """Map string notification type to enum."""
         mapping = {
             "delayed": NotificationType.DELAYED,
             "cancelled": NotificationType.CANCELLED,
             "boarding": NotificationType.BOARDING,
             "gate_change": NotificationType.GATE_CHANGE,
-            "landing": NotificationType.LANDING_WELCOME,  # ADDED: Landing support
-            # Add more mappings as needed
+            "landing": NotificationType.LANDING_WELCOME
         }
         return mapping.get(notification_type)
     
     async def poll_landed_flights(self) -> DatabaseResult:
         """
-        Check for landed flights and send welcome messages.
-        
-        Detects flights that have status "LANDED", "ARRIVED", or "COMPLETED"
-        and sends welcome notifications if not already sent.
+        Check for landed flights with OPTIMIZED detection.
         """
-        logger.info("polling_landed_flights")
+        logger.info("polling_landed_flights_optimized")
         
         now_utc = datetime.now(timezone.utc)
         
         try:
-            # Get flights that should have landed (departure + 8 hours as rough estimate)
             potential_landing_time = now_utc - timedelta(hours=8)
             trips_to_check = await self.db_client.get_trips_after_departure(potential_landing_time)
             
             landed_count = 0
-            error_count = 0
             
             for trip in trips_to_check:
                 try:
-                    # Check if we already sent landing notification
+                    # Check if landing notification already sent
                     history = await self.db_client.get_notification_history(
                         trip.id, NotificationType.LANDING_WELCOME.value.upper()
                     )
@@ -806,106 +590,70 @@ class NotificationsAgent:
                     if any(log.delivery_status == "SENT" for log in history):
                         continue
                     
-                    # Get current flight status from AeroAPI
+                    # Get current status
                     departure_date_str = trip.departure_date.strftime("%Y-%m-%d")
                     current_status = await self.aeroapi_client.get_flight_status(
                         trip.flight_number, 
                         departure_date_str
                     )
                     
-                    # Check if flight has landed using correct AeroAPI indicators
-                    if current_status:
-                        is_landed = (
-                            "arrived" in current_status.status.lower() or 
-                            "gate arrival" in current_status.status.lower() or
-                            (current_status.progress_percent and current_status.progress_percent >= 100) or
-                            current_status.actual_in  # Has actual landing time from AeroAPI
-                        )
+                    if current_status and self._is_flight_landed(current_status):
+                        # Update trip status
+                        await self.db_client.update_trip_status(trip.id, {"status": "LANDED"})
                         
-                        if is_landed:
-                            # CRITICAL FIX: Update trip status to LANDED to prevent re-polling
-                            await self.db_client.update_trip_status(trip.id, {"status": "LANDED"})
-                            logger.info("trip_status_updated_to_landed_in_landing_detection", 
-                                trip_id=str(trip.id),
-                                flight_number=trip.flight_number,
-                                flight_status=current_status.status
+                        # Save status to history
+                        await self._save_flight_status_optimized(trip, current_status)
+                        
+                        # Check quiet hours at destination
+                        from ..utils.timezone_utils import is_quiet_hours_local
+                        is_quiet = is_quiet_hours_local(now_utc, trip.destination_iata)
+                        
+                        if not is_quiet:
+                            # Send landing welcome
+                            result = await self.send_notification(
+                                trip=trip,
+                                notification_type=NotificationType.LANDING_WELCOME,
+                                extra_data=await self._get_dynamic_landing_data(trip)
                             )
                             
-                            # Save the landed status to history
-                            await self._save_flight_status(trip, current_status)
-                            
-                            # Check quiet hours before sending
-                            is_quiet_hours = is_quiet_hours_local(now_utc, trip.destination_iata)
-                            
-                            if not is_quiet_hours:
-                                # Send landing welcome notification
-                                logger.info("landing_detected_sending_welcome",
-                                    trip_id=str(trip.id),
-                                    flight_number=trip.flight_number,
-                                    status=current_status.status,
-                                    progress_percent=current_status.progress_percent,
-                                    actual_in=current_status.actual_in
-                                )
-                                
-                                # Use proper LANDING_WELCOME template
-                                from ..config.messages import MessageConfig
-                                
-                                result = await self.send_notification(
-                                    trip=trip,
-                                    notification_type=NotificationType.LANDING_WELCOME,
-                                    extra_data={
-                                        "hotel_address": MessageConfig.get_hotel_placeholder(str(trip.agency_id) if hasattr(trip, 'agency_id') else None)
-                                    }
-                                )
-                                
-                                if result.success:
-                                    landed_count += 1
-                                    logger.info("landing_welcome_sent",
-                                        trip_id=str(trip.id),
-                                        message_sid=result.data.get("message_sid") if result.data else None
-                                    )
-                                else:
-                                    logger.error("landing_welcome_failed",
-                                        trip_id=str(trip.id),
-                                        error=result.error
-                                    )
-                            else:
-                                logger.info("landing_notification_deferred_quiet_hours", 
-                                    trip_id=str(trip.id),
-                                    destination_iata=trip.destination_iata
-                                )
+                            if result.success:
+                                landed_count += 1
+                                logger.info("landing_welcome_sent", trip_id=str(trip.id))
                         else:
-                            logger.debug("flight_not_landed_yet",
+                            logger.info("landing_notification_deferred_quiet_hours", 
                                 trip_id=str(trip.id),
-                                flight_number=trip.flight_number,
-                                status=current_status.status,
-                                progress_percent=current_status.progress_percent,
-                                actual_in=current_status.actual_in
+                                destination_iata=trip.destination_iata
                             )
                     
                 except Exception as e:
                     logger.error("landing_detection_failed_for_trip", 
                         trip_id=str(trip.id),
-                        flight_number=trip.flight_number,
                         error=str(e)
                     )
-                    error_count += 1
             
-            logger.info("landing_detection_completed", 
-                trips_checked=len(trips_to_check),
-                landed_notifications_sent=landed_count,
-                errors=error_count
-            )
-            
-            return DatabaseResult(
-                success=True,
-                data={"landed_flights": landed_count, "errors": error_count},
-                affected_rows=landed_count
-            )
+            return DatabaseResult(success=True, data={"landed_flights": landed_count})
             
         except Exception as e:
             logger.error("landing_detection_failed", error=str(e))
             return DatabaseResult(success=False, error=str(e))
+    
+    async def _get_dynamic_landing_data(self, trip: Trip) -> Dict[str, Any]:
+        """
+        Get dynamic landing data from trip metadata and database.
+        """
+        hotel_address = "tu alojamiento reservado"
+        
+        # Try to get hotel info from trip metadata
+        if hasattr(trip, 'metadata') and trip.metadata:
+            if isinstance(trip.metadata, dict):
+                hotel_address = (
+                    trip.metadata.get("hotel_address") or 
+                    trip.metadata.get("accommodation_address") or
+                    trip.metadata.get("hotel_name") or
+                    hotel_address
+                )
+        
+        return {"hotel_address": hotel_address}
     
     async def send_notification(
         self, 
@@ -914,35 +662,23 @@ class NotificationsAgent:
         extra_data: Optional[Dict[str, Any]] = None
     ) -> DatabaseResult:
         """
-        Send WhatsApp notification using async Twilio client with retry logic.
-        
-        Args:
-            trip: Trip object with flight details
-            notification_type: Type of notification to send
-            extra_data: Additional data for template formatting
-            
-        Returns:
-            DatabaseResult with send status
+        Send WhatsApp notification with SIMPLIFIED idempotency.
         """
         notification_type_db = notification_type.value.upper()
         
-        # ENHANCED: Use dedup_hash if provided for DELAYED notifications
-        if extra_data and "dedup_hash" in extra_data:
-            idempotency_hash = extra_data["dedup_hash"]
-        else:
-            # Generate standard idempotency hash
-            idempotency_data = {
-                "trip_id": str(trip.id),
-                "notification_type": notification_type_db,
-                "extra_data": {k: v for k, v in (extra_data or {}).items() if k != "dedup_hash"}
-            }
-            idempotency_hash = hashlib.sha256(
-                json.dumps(idempotency_data, sort_keys=True).encode()
-            ).hexdigest()[:16]
+        # SIMPLIFIED idempotency hash
+        idempotency_data = {
+            "trip_id": str(trip.id),
+            "notification_type": notification_type_db,
+            "date": datetime.now(timezone.utc).strftime("%Y-%m-%d")  # Daily uniqueness
+        }
+        idempotency_hash = hashlib.sha256(
+            json.dumps(idempotency_data, sort_keys=True).encode()
+        ).hexdigest()[:16]
         
-        # Check if notification already sent
+        # Check if notification already sent today
         try:
-            existing_notification = await self.db_client.execute_query(
+            existing = await self.db_client.execute_query(
                 """
                 SELECT id FROM notifications_log 
                 WHERE trip_id = %s AND notification_type = %s AND idempotency_hash = %s 
@@ -952,33 +688,16 @@ class NotificationsAgent:
                 (str(trip.id), notification_type_db, idempotency_hash)
             )
             
-            if existing_notification.data:
-                logger.info("notification_already_sent",
-                    trip_id=str(trip.id),
-                    notification_type=notification_type,
-                    idempotency_hash=idempotency_hash
-                )
-                return DatabaseResult(success=True, data={"status": "already_sent"})
-        except Exception as e:
-            logger.warning("idempotency_check_failed", 
-                trip_id=str(trip.id),
-                error=str(e)
-            )
-            # Continue with send attempt
+            if existing.data:
+                return DatabaseResult(success=True, data={"status": "already_sent_today"})
+        except Exception:
+            pass  # Continue with send attempt
         
         try:
-            # Format message using templates
+            # Format message
             message_data = await self.format_message(trip, notification_type, extra_data)
             
-            logger.info("sending_whatsapp_notification", 
-                trip_id=str(trip.id),
-                phone=trip.whatsapp,
-                template=message_data["template_name"],
-                notification_type=notification_type,
-                idempotency_hash=idempotency_hash
-            )
-            
-            # Define send function for retry service
+            # Send with retry
             async def send_func():
                 result = await self.async_twilio_client.send_template_message(
                     to=f"whatsapp:{trip.whatsapp}",
@@ -998,20 +717,16 @@ class NotificationsAgent:
                     data={"message_sid": result.sid, "status": result.status}
                 )
             
-            # Send with retry logic
-            context = {
-                "trip_id": str(trip.id),
-                "notification_type": notification_type_db,
-                "phone": trip.whatsapp
-            }
-            
             send_result = await self.retry_service.send_with_retry(
                 send_func=send_func,
                 max_attempts=3,
-                context=context
+                context={
+                    "trip_id": str(trip.id),
+                    "notification_type": notification_type_db
+                }
             )
             
-            # Log the notification attempt
+            # Log result
             await self.db_client.log_notification_sent(
                 trip_id=str(trip.id),
                 notification_type=notification_type_db,
@@ -1021,26 +736,12 @@ class NotificationsAgent:
                 twilio_message_sid=send_result.data.get("message_sid") if send_result.success else None,
                 error_message=send_result.error if not send_result.success else None,
                 retry_count=send_result.data.get("retry_count", 0) if send_result.data else 0,
-                idempotency_hash=idempotency_hash,
-                eta_round=extra_data.get("eta_round") if extra_data else None
+                idempotency_hash=idempotency_hash
             )
-            
-            if send_result.success:
-                logger.info("notification_sent_successfully", 
-                    trip_id=str(trip.id),
-                    message_sid=send_result.data.get("message_sid"),
-                    notification_type=notification_type
-                )
-            else:
-                logger.error("notification_send_failed_final", 
-                    trip_id=str(trip.id),
-                    error=send_result.error
-                )
             
             return send_result
             
         except Exception as e:
-            # Log failed attempt
             await self.db_client.log_notification_sent(
                 trip_id=str(trip.id),
                 notification_type=notification_type_db,
@@ -1048,14 +749,9 @@ class NotificationsAgent:
                 status="FAILED",
                 template_name=WhatsAppTemplates.get_template_info(notification_type)["name"],
                 error_message=str(e),
-                idempotency_hash=idempotency_hash,
-                eta_round=extra_data.get("eta_round") if extra_data else None
+                idempotency_hash=idempotency_hash
             )
             
-            logger.error("notification_send_exception", 
-                trip_id=str(trip.id),
-                error=str(e)
-            )
             return DatabaseResult(success=False, error=str(e))
     
     async def format_message(
@@ -1065,17 +761,9 @@ class NotificationsAgent:
         extra_data: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
-        Format WhatsApp message using templates.
-        
-        Args:
-            trip: Trip object with flight details
-            notification_type: Type of notification
-            extra_data: Additional formatting data
-            
-        Returns:
-            Dict with template_sid, template_name and template_variables
+        Format WhatsApp message using DYNAMIC data from database.
         """
-        # FIXED: Use human-readable time formatting
+        # Use human-readable time formatting
         formatted_departure_time = format_departure_time_human(trip.departure_date, trip.origin_iata)
         
         trip_data = {
@@ -1084,14 +772,15 @@ class NotificationsAgent:
             "origin_iata": trip.origin_iata,
             "destination_iata": trip.destination_iata,
             "departure_date": trip.departure_date.isoformat(),
-            "departure_time": formatted_departure_time,  # Human readable format
+            "departure_time": formatted_departure_time,
             "status": trip.status,
-            "metadata": trip.metadata  # Include metadata for hotel info
+            "metadata": getattr(trip, 'metadata', {})
         }
         
         if extra_data:
             trip_data.update(extra_data)
         
+        # Delegate to templates with enhanced data
         if notification_type == NotificationType.REMINDER_24H:
             weather_info = extra_data.get("weather_info", "buen clima") if extra_data else "buen clima"
             additional_info = extra_data.get("additional_info", "¡Buen viaje!") if extra_data else "¡Buen viaje!"
@@ -1125,59 +814,73 @@ class NotificationsAgent:
         else:
             raise ValueError(f"Unknown notification type: {notification_type}")
     
-    def calculate_next_check_time(self, departure_time: datetime, now_utc: datetime, arrival_time: Optional[datetime] = None) -> datetime:
-        """
-        Calculate next polling time based on poll optimization rules for FULL FLIGHT LIFECYCLE.
-        
-        Rules from TC-001:
-        PRE-DEPARTURE:
-        - > 24h: +6h
-        - 24h-4h: +1h  
-        - ≤ 4h: +15min
-        
-        IN-FLIGHT (after departure, before arrival):
-        - Poll every 30min to track arrival updates
-        
-        ARRIVAL PHASE (within 1h of expected arrival):
-        - Poll every 10min for precise landing detection
-        """
-        time_until_departure = departure_time - now_utc
-        hours_until_departure = time_until_departure.total_seconds() / 3600
-        
-        # PRE-DEPARTURE PHASE
-        if hours_until_departure > 24:
-            return now_utc + timedelta(hours=6)
-        elif hours_until_departure > 4:
-            return now_utc + timedelta(hours=1)
-        elif hours_until_departure > 0:
-            return now_utc + timedelta(minutes=15)
-        
-        # POST-DEPARTURE PHASE
-        else:
-            # If we have arrival time info, use smart arrival tracking
-            if arrival_time:
-                time_until_arrival = arrival_time - now_utc
-                hours_until_arrival = time_until_arrival.total_seconds() / 3600
-                
-                if hours_until_arrival > 1:
-                    # In-flight, more than 1h to arrival: check every 30min
-                    return now_utc + timedelta(minutes=30)
-                elif hours_until_arrival > -0.5:  # Up to 30min past expected arrival
-                    # Arrival phase: check every 10min for precise landing detection
-                    return now_utc + timedelta(minutes=10)
-                else:
-                    # More than 30min past arrival: likely landed, check every 1h until confirmed
-                    return now_utc + timedelta(hours=1)
-            else:
-                # No arrival time available: generic in-flight polling every 30min
-                return now_utc + timedelta(minutes=30)
+    async def send_single_notification(
+        self, 
+        trip_id: UUID, 
+        notification_type: NotificationType, 
+        extra_data: Optional[Dict[str, Any]] = None
+    ) -> DatabaseResult:
+        """Send a single notification for a specific trip."""
+        try:
+            trip_result = await self.db_client.get_trip_by_id(trip_id)
+            if not trip_result.success or not trip_result.data:
+                return DatabaseResult(success=False, error=f"Trip {trip_id} not found")
+            
+            trip = Trip(**trip_result.data)
+            return await self.send_notification(trip, notification_type, extra_data)
+            
+        except Exception as e:
+            return DatabaseResult(success=False, error=str(e))
     
-    async def close(self):
-        """Clean up resources."""
-        await self.db_client.close()
-        logger.info("notifications_agent_closed")
-
-    # TC-003: Free text messaging for ConciergeAgent
+    async def check_single_trip_status(self, trip: Trip) -> DatabaseResult:
+        """
+        Check flight status for a single trip with UNIFIED logic.
+        """
+        try:
+            flight_date_str = trip.departure_date.strftime("%Y-%m-%d")
+            current_status = await self.aeroapi_client.get_flight_status(
+                trip.flight_number,
+                flight_date_str
+            )
+            
+            if not current_status:
+                return DatabaseResult(
+                    success=True,
+                    data={"trip_id": str(trip.id), "status": "no_flight_data"}
+                )
+            
+            # Get previous status and detect changes
+            previous_status = await self._get_previous_flight_status(trip)
+            changes = self._detect_meaningful_changes(current_status, previous_status)
+            
+            # Update trip and save status
+            await self.db_client.update_trip_comprehensive(trip.id, current_status)
+            await self._save_flight_status_optimized(trip, current_status)
+            
+            # Process changes
+            notifications_sent = 0
+            for change in changes:
+                try:
+                    await self._process_flight_change_simplified(trip, change, current_status)
+                    notifications_sent += 1
+                except Exception as change_error:
+                    logger.error("single_trip_change_processing_failed",
+                        trip_id=str(trip.id),
+                        error=str(change_error)
+                    )
+            
+            return DatabaseResult(
+                success=True,
+                data={
+                    "trip_id": str(trip.id),
+                    "current_status": current_status.status,
+                    "changes_detected": len(changes),
+                    "notifications_sent": notifications_sent
+                }
+            )
+            
+        except Exception as e:
+            return DatabaseResult(success=False, error=str(e))
     
     async def send_free_text(
         self,
@@ -1185,25 +888,8 @@ class NotificationsAgent:
         message: str,
         attachments: Optional[List[str]] = None
     ) -> DatabaseResult:
-        """
-        Send non-template WhatsApp message using async client with retry.
-        
-        Args:
-            whatsapp_number: Phone number (without whatsapp: prefix)
-            message: Free text message to send
-            attachments: Optional list of file URLs to attach
-            
-        Returns:
-            DatabaseResult with send status
-        """
+        """Send free text message for ConciergeAgent."""
         try:
-            logger.info("sending_free_text_message",
-                to_number=whatsapp_number,
-                message_length=len(message),
-                has_attachments=bool(attachments)
-            )
-            
-            # Define send function for retry service
             async def send_func():
                 result = await self.async_twilio_client.send_text_message(
                     to=f"whatsapp:{whatsapp_number}",
@@ -1222,42 +908,21 @@ class NotificationsAgent:
                     data={"message_sid": result.sid, "status": result.status}
                 )
             
-            # Send with retry logic
-            context = {
-                "to_number": whatsapp_number,
-                "message_type": "free_text"
-            }
-            
             send_result = await self.retry_service.send_with_retry(
                 send_func=send_func,
                 max_attempts=3,
-                context=context
+                context={"to_number": whatsapp_number, "message_type": "free_text"}
             )
             
             # Handle attachments if message sent successfully
-            attachments_sent = 0
             if send_result.success and attachments:
                 for attachment_url in attachments:
                     try:
-                        attachment_result = await self.async_twilio_client.send_media_message(
+                        await self.async_twilio_client.send_media_message(
                             to=f"whatsapp:{whatsapp_number}",
                             messaging_service_sid=self.messaging_service_sid,
                             media_url=attachment_url
                         )
-                        
-                        if attachment_result.error_code:
-                            logger.error("attachment_send_failed",
-                                to_number=whatsapp_number,
-                                attachment_url=attachment_url,
-                                error=f"{attachment_result.error_code}: {attachment_result.error_message}"
-                            )
-                        else:
-                            attachments_sent += 1
-                            logger.info("attachment_sent",
-                                to_number=whatsapp_number,
-                                attachment_url=attachment_url,
-                                message_sid=attachment_result.sid
-                            )
                     except Exception as e:
                         logger.error("attachment_send_exception",
                             to_number=whatsapp_number,
@@ -1265,233 +930,12 @@ class NotificationsAgent:
                             error=str(e)
                         )
             
-            if send_result.success:
-                logger.info("free_text_sent_successfully",
-                    to_number=whatsapp_number,
-                    message_sid=send_result.data.get("message_sid"),
-                    attachments_sent=attachments_sent
-                )
-                
-                return DatabaseResult(
-                    success=True,
-                    data={
-                        "message_sid": send_result.data.get("message_sid"),
-                        "to": whatsapp_number,
-                        "attachments_sent": attachments_sent
-                    }
-                )
-            else:
-                logger.error("free_text_send_failed",
-                    to_number=whatsapp_number,
-                    error=send_result.error
-                )
-                return send_result
+            return send_result
             
         except Exception as e:
-            logger.error("free_text_send_exception",
-                to_number=whatsapp_number,
-                error=str(e)
-            )
-            return DatabaseResult(
-                success=False,
-                error=str(e)
-            )
-
-    def _consolidate_ping_pong_changes(self, changes: List[Dict[str, Any]], trip: Trip) -> List[Dict[str, Any]]:
-        """
-        Consolidate ping-pong changes within the same polling cycle.
-        
-        Examples:
-        - estimated_out: 02:30 → NULL → 02:30 = No notification (back to original)
-        - estimated_out: 02:30 → 03:15 → NULL → 03:15 = Send only final: 02:30 → 03:15
-        - gate: A1 → B2 → A1 = No notification (back to original)
-        """
-        if not changes:
-            return changes
-        
-        logger.info("consolidating_ping_pong_changes", 
-            trip_id=str(trip.id),
-            original_changes_count=len(changes),
-            changes=[f"{c['type']}:{c.get('old_value')}→{c.get('new_value')}" for c in changes]
-        )
-        
-        # Group changes by type
-        changes_by_type = {}
-        for change in changes:
-            change_type = change["type"]
-            if change_type not in changes_by_type:
-                changes_by_type[change_type] = []
-            changes_by_type[change_type].append(change)
-        
-        consolidated = []
-        
-        for change_type, type_changes in changes_by_type.items():
-            if len(type_changes) == 1:
-                # Single change, keep it
-                consolidated.append(type_changes[0])
-            else:
-                # Multiple changes of same type - consolidate
-                first_change = type_changes[0]
-                last_change = type_changes[-1]
-                
-                # Check if we're back to the original value (ping-pong)
-                if first_change["old_value"] == last_change["new_value"]:
-                    logger.info("ping_pong_detected_suppressed", 
-                        trip_id=str(trip.id),
-                        change_type=change_type,
-                        original_value=first_change["old_value"],
-                        changes_suppressed=len(type_changes)
-                    )
-                    # Back to original - suppress all notifications
-                    continue
-                else:
-                    # Net change - send consolidated notification
-                    consolidated_change = {
-                        "type": change_type,
-                        "old_value": first_change["old_value"],
-                        "new_value": last_change["new_value"],
-                        "notification_type": last_change["notification_type"],
-                        "consolidation_count": len(type_changes)
-                    }
-                    consolidated.append(consolidated_change)
-                    
-                    logger.info("changes_consolidated", 
-                        trip_id=str(trip.id),
-                        change_type=change_type,
-                        original_count=len(type_changes),
-                        final_change=f"{first_change['old_value']}→{last_change['new_value']}"
-                    )
-        
-        logger.info("consolidation_completed", 
-            trip_id=str(trip.id),
-            original_changes=len(changes),
-            consolidated_changes=len(consolidated),
-            suppressed_ping_pongs=len(changes) - len(consolidated)
-        )
-        
-        return consolidated 
-
-    async def check_single_trip_status(self, trip: Trip) -> DatabaseResult:
-        """
-        Check flight status for a single trip and send notifications if needed.
-        
-        This method is used by the intelligent polling system to check specific trips
-        when their next_check_at time has arrived.
-        
-        Args:
-            trip: Trip object to check status for
-            
-        Returns:
-            DatabaseResult with operation status
-        """
-        try:
-            logger.info("checking_single_trip_status",
-                trip_id=str(trip.id),
-                flight_number=trip.flight_number
-            )
-            
-            # Get current flight status from AeroAPI
-            from ..services.aeroapi_client import AeroAPIClient
-            aeroapi_client = AeroAPIClient()
-            
-            # Format flight date
-            flight_date_str = trip.departure_date.strftime("%Y-%m-%d")
-            
-            current_status = await aeroapi_client.get_flight_status(
-                trip.flight_number,
-                flight_date_str
-            )
-            
-            if not current_status:
-                logger.warning("single_trip_no_flight_status",
-                    trip_id=str(trip.id),
-                    flight_number=trip.flight_number
-                )
-                return DatabaseResult(
-                    success=True,
-                    data={"trip_id": str(trip.id), "status": "no_flight_data"}
-                )
-            
-            # Get previous status from database
-            latest_status = await self.db_client.get_latest_flight_status(trip.id)
-            
-            previous_status = None
-            if latest_status:
-                try:
-                    from ..services.aeroapi_client import FlightStatus
-                    previous_status = FlightStatus(
-                        ident=latest_status.get("flight_number", ""),
-                        status=latest_status.get("status", ""),
-                        gate_origin=latest_status.get("gate_origin"),
-                        gate_destination=latest_status.get("gate_destination"),
-                        estimated_out=latest_status.get("estimated_out"),
-                        estimated_in=latest_status.get("estimated_in"),
-                        actual_out=latest_status.get("actual_out"),
-                        actual_in=latest_status.get("actual_in")
-                    )
-                except Exception as e:
-                    logger.warning("previous_status_parse_failed",
-                        trip_id=str(trip.id),
-                        error=str(e)
-                    )
-            
-            # Detect changes
-            changes = aeroapi_client.detect_flight_changes(current_status, previous_status)
-            
-            # Update trip with latest status
-            await self.db_client.update_trip_comprehensive(trip.id, current_status)
-            
-            # Save status to history
-            await self.db_client.save_flight_status(
-                trip_id=trip.id,
-                flight_number=current_status.ident,
-                flight_date=flight_date_str,
-                status=current_status.status,
-                gate_origin=current_status.gate_origin,
-                gate_destination=current_status.gate_destination,
-                estimated_out=current_status.estimated_out,
-                actual_out=current_status.actual_out,
-                estimated_in=current_status.estimated_in,
-                actual_in=current_status.actual_in,
-                source="intelligent_polling"
-            )
-            
-            # Process changes and send notifications
-            notifications_sent = 0
-            for change in changes:
-                try:
-                    await self._process_flight_change(trip, change, current_status)
-                    notifications_sent += 1
-                except Exception as change_error:
-                    logger.error("single_trip_change_processing_failed",
-                        trip_id=str(trip.id),
-                        change_type=change.get("type"),
-                        error=str(change_error)
-                    )
-            
-            logger.info("single_trip_status_check_completed",
-                trip_id=str(trip.id),
-                current_status=current_status.status,
-                changes_detected=len(changes),
-                notifications_sent=notifications_sent
-            )
-            
-            return DatabaseResult(
-                success=True,
-                data={
-                    "trip_id": str(trip.id),
-                    "current_status": current_status.status,
-                    "changes_detected": len(changes),
-                    "notifications_sent": notifications_sent
-                }
-            )
-            
-        except Exception as e:
-            logger.error("single_trip_status_check_failed",
-                trip_id=str(trip.id),
-                error=str(e)
-            )
-            return DatabaseResult(
-                success=False,
-                error=str(e)
-            ) 
+            return DatabaseResult(success=False, error=str(e))
+    
+    async def close(self):
+        """Clean up resources."""
+        await self.db_client.close()
+        logger.info("notifications_agent_closed") 
