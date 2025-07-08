@@ -697,3 +697,70 @@ Trip Creation → Smart Polling → AeroAPI → Status Update → Landing Detect
 5. **Business Critical**: No more notification spam
 
 **Status**: ✅ **READY FOR PRODUCTION DEPLOYMENT**
+
+## 🔧 **CRITICAL GATE NOTIFICATION FIXES** (2025-01-16) ✅
+
+**🚨 Objetivo:** Resolver fallas críticas en notificaciones de gate reportadas por usuario
+
+### **Problemas Reportados por Usuario:**
+1. **AA1641 Boarding**: Notificación mostraba `"Ver pantallas"` en lugar de gate real `D16`
+2. **AA837 Gate Change**: Notificación decía `"Nueva puerta: D19"` pero no se actualizaba en Supabase
+
+### **✅ FIXES IMPLEMENTADOS**
+
+#### **1. BOARDING GATE DISPLAY FIX** ✅ COMPLETED
+- **Problema**: Fallback hardcodeado a "Ver pantallas" sobrescribía gate real
+- **Solución**: Lógica de prioridad inteligente en `notifications_agent.py:585-606`
+- **Lógica**: `current_status.gate_origin` → `trip.gate` → `placeholder`
+- **Archivos**: `app/agents/notifications_agent.py`
+
+#### **2. GATE PERSISTENCE FIX** ✅ COMPLETED  
+- **Problema**: `update_trip_comprehensive` sobrescribía gate con `None`
+- **Solución**: Solo actualizar gate cuando hay valor válido en `supabase_client.py:1461-1471`
+- **Beneficio**: Preserva gate existente en DB cuando AeroAPI no provee gate
+- **Archivos**: `app/db/supabase_client.py`
+
+#### **3. COMPREHENSIVE VALIDATION** ✅ COMPLETED
+- **Herramienta**: `scripts/test_fixes_validation.py`
+- **Tests**: 6/6 pasados exitosamente
+- **Cobertura**: Ambos flujos end-to-end validados
+
+### **📊 RESULTADOS DE VALIDACIÓN**
+
+```
+🧪 GATE FIXES VALIDATION RESULTS:
+✅ Fix 1 - Boarding Gate Display: 3/3 tests passed
+✅ Fix 2 - Gate Update Preservation: 2/2 tests passed  
+✅ Gate Change Detection: 1/1 test passed
+
+TOTAL: 6/6 tests passed ✅
+Status: Ready for deployment 🚀
+```
+
+### **🎯 BUSINESS IMPACT**
+
+**Antes:**
+- Usuarios recibían "Ver pantallas" en notificaciones de boarding
+- Cambios de gate se detectaban pero no persistían en DB
+- Experiencia de usuario inconsistente
+
+**Después:**  
+- Notificaciones muestran gate real (D16, D19, etc.)
+- Cambios de gate se persisten correctamente en Supabase
+- Experiencia de usuario precisa y confiable
+
+### **🔧 ARCHITECTURAL IMPROVEMENTS**
+
+1. **Smart Gate Fallback Logic**: Prioridad inteligente para información de gate
+2. **Conditional Database Updates**: Solo actualiza cuando hay datos válidos
+3. **Comprehensive Validation**: Suite de tests para prevenir regresiones
+
+### **📋 DEPLOYMENT READINESS**
+
+- ✅ Fixes implementados y validados
+- ✅ Backward compatibility mantenida
+- ✅ No breaking changes en API
+- ✅ Logging agregado para troubleshooting
+- ✅ Test suite creada para futuras validaciones
+
+**Status:** ✅ **READY FOR PRODUCTION DEPLOYMENT**

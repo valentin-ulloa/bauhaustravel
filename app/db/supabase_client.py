@@ -1458,9 +1458,21 @@ class SupabaseDBClient:
         """
         try:
             update_data = {
-                "status": flight_status.status,
-                "gate": flight_status.gate_origin
+                "status": flight_status.status
             }
+            
+            # FIXED: Only update gate if we have a valid gate value (prevent overwriting with None)
+            if flight_status.gate_origin:
+                update_data["gate"] = flight_status.gate_origin
+                logger.info("updating_gate_field", 
+                    trip_id=str(trip_id),
+                    new_gate=flight_status.gate_origin
+                )
+            else:
+                logger.debug("preserving_existing_gate", 
+                    trip_id=str(trip_id),
+                    reason="flight_status.gate_origin is None or empty"
+                )
             
             # Update departure_date if we have estimated_out
             if flight_status.estimated_out:

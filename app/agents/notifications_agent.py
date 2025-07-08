@@ -581,10 +581,31 @@ class NotificationsAgent:
                 extra_data["new_status"] = change["new_value"]
                 extra_data["old_status"] = change["old_value"]
             
-            # FIXED: Add gate information for boarding notifications using configurable text
+            # FIXED: Add gate information for boarding notifications - prioritize real gate data
             if notification_type == "boarding":
                 from ..config.messages import MessageConfig
-                extra_data["gate"] = current_status.gate_origin or MessageConfig.get_gate_placeholder(str(trip.agency_id) if hasattr(trip, 'agency_id') else None)
+                
+                # Priority order: 1) current_status, 2) trip.gate from DB, 3) placeholder
+                gate_info = None
+                
+                if current_status.gate_origin:
+                    gate_info = current_status.gate_origin
+                elif hasattr(trip, 'gate') and trip.gate:
+                    gate_info = trip.gate
+                    logger.info("using_gate_from_trip_db", 
+                        trip_id=str(trip.id),
+                        gate=trip.gate
+                    )
+                
+                # Only use placeholder as last resort
+                if not gate_info:
+                    gate_info = MessageConfig.get_gate_placeholder(str(trip.agency_id) if hasattr(trip, 'agency_id') else None)
+                    logger.warning("using_gate_placeholder_fallback",
+                        trip_id=str(trip.id),
+                        placeholder=gate_info
+                    )
+                
+                extra_data["gate"] = gate_info
             
             # Map notification type to our enum
             notification_enum = self._map_notification_type(notification_type)
