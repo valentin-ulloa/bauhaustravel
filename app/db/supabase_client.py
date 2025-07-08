@@ -8,6 +8,7 @@ import httpx
 import structlog
 from ..models.database import Trip, TripCreate, NotificationLog, DatabaseResult, AgencyPlace, Itinerary, TripContext
 import asyncio
+from ..utils.timezone_utils import parse_local_time_to_utc
 
 logger = structlog.get_logger()
 
@@ -162,14 +163,26 @@ class SupabaseDBClient:
                 flight_details = trip_data.metadata['flight_details']
                 if 'expected_arrival' in flight_details:
                     try:
-                        # Parse expected_arrival from metadata and add to insert_data
+                        # Parse expected_arrival from metadata
                         expected_arrival_str = flight_details['expected_arrival']
                         estimated_arrival_dt = datetime.fromisoformat(expected_arrival_str.replace('Z', '+00:00'))
-                        insert_data["estimated_arrival"] = estimated_arrival_dt.isoformat()
                         
-                        logger.info("estimated_arrival_extracted_from_metadata",
+                        # CRITICAL FIX: Apply timezone conversion for consistency with departure_date
+                        # estimated_arrival should be treated as LOCAL destination time, then converted to UTC
+                        
+                        # Remove timezone info to treat as naive local time
+                        if estimated_arrival_dt.tzinfo:
+                            estimated_arrival_dt = estimated_arrival_dt.replace(tzinfo=None)
+                        
+                        # Convert destination local time to UTC (same policy as departure_date)
+                        estimated_arrival_utc = parse_local_time_to_utc(estimated_arrival_dt, trip_data.destination_iata)
+                        insert_data["estimated_arrival"] = estimated_arrival_utc.isoformat()
+                        
+                        logger.info("estimated_arrival_converted_to_utc",
                             flight_number=trip_data.flight_number,
-                            estimated_arrival=estimated_arrival_dt.isoformat()
+                            local_arrival=estimated_arrival_dt.isoformat(),
+                            destination_iata=trip_data.destination_iata,
+                            utc_arrival=estimated_arrival_utc.isoformat()
                         )
                     except (ValueError, KeyError) as e:
                         logger.warning("estimated_arrival_parse_failed",
