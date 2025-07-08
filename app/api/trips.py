@@ -13,53 +13,64 @@ async def create_test_trip(
 ):
     """
     Create a test trip for validation purposes.
-    Default departure time is 25 hours from now to test 24h reminders.
+    
+    SIMPLIFIED: Uses new timezone policy - departure time is LOCAL airport time.
+    TripCreate automatically converts to UTC for storage.
     """
     try:
         from app.db.supabase_client import SupabaseDBClient
         from app.models.database import TripCreate
-        from datetime import datetime, timezone, timedelta
+        from datetime import datetime, timedelta
         from uuid import UUID
         
         db_client = SupabaseDBClient()
         
-        # Create departure time based on hours_from_now
-        departure_date = datetime.now(timezone.utc) + timedelta(hours=hours_from_now)
+        # POLICY ENFORCEMENT: Create LOCAL time for the origin airport
+        # This will be automatically converted to UTC by TripCreate
+        base_time = datetime.now() + timedelta(hours=hours_from_now)
+        local_departure = base_time.replace(second=0, microsecond=0)  # Clean time
         
-        # Create TripCreate object
+        # Create TripCreate object (auto-converts local time to UTC)
         trip_create = TripCreate(
             client_name=client_name,
             whatsapp=whatsapp,
             flight_number=flight_number,
             origin_iata=origin_iata,
             destination_iata=destination_iata,
-            departure_date=departure_date,
+            departure_date=local_departure,  # LOCAL TIME - auto-converted to UTC
             agency_id=UUID("00000000-0000-0000-0000-000000000001"),  # Default test agency
-            client_description=f"Test trip created for system validation - {departure_date.strftime('%Y-%m-%d %H:%M')} UTC"
+            client_description=f"Test trip created for system validation - Local time: {local_departure.strftime('%Y-%m-%d %H:%M')}"
         )
         
         result = await db_client.create_trip(trip_create)
         
         if result.success:
-            trip_id = result.data.get("id")
+            trip_data = result.data
+            
+            # Display local time for user clarity
+            from app.utils.timezone_utils import convert_utc_to_local_airport
+            stored_utc = datetime.fromisoformat(trip_data["departure_date"].replace('Z', '+00:00'))
+            display_local = convert_utc_to_local_airport(stored_utc, origin_iata)
+            
             return {
-                "status": "success",
-                "message": "Test trip created successfully", 
-                "trip_id": trip_id,
-                "trip_data": result.data,
-                "departure_in_hours": hours_from_now,
-                "next_steps": f"Use POST /test-flight-notification/{trip_id} to test notifications"
+                "success": True,
+                "trip_id": str(trip_data["id"]),
+                "message": "Test trip created successfully",
+                "flight_number": flight_number,
+                "departure_local": display_local.strftime('%Y-%m-%d %H:%M'),
+                "departure_utc": trip_data["departure_date"],
+                "next_check_at": trip_data.get("next_check_at")
             }
         else:
             return {
-                "status": "error",
-                "message": "Failed to create test trip",
-                "error": result.error
+                "success": False,
+                "error": result.error,
+                "message": "Failed to create test trip"
             }
             
     except Exception as e:
         return {
-            "status": "error", 
-            "message": "Exception creating test trip",
-            "error": str(e)
+            "success": False,
+            "error": str(e),
+            "message": "Exception during test trip creation"
         } 

@@ -28,84 +28,36 @@ router.include_router(agencies_router, tags=["agencies"])
 @router.post("/trips")
 async def create_trip(trip_in: TripCreate):
     """
-    Create a new trip and send reservation confirmation.
+    Create a new trip with intelligent scheduling.
     
-    This endpoint:
-    1. Validates phone number format (422 if invalid)
-    2. Checks for duplicates (409 if exists) 
-    3. Inserts the trip into Supabase using SupabaseDBClient
-    4. Triggers immediate reservation confirmation via NotificationsAgent
-    5. Returns trip_id and confirmation status
-    
-    Follows the Agent architecture pattern - no DB logic in router.
+    SIMPLIFIED: No manual timezone conversions needed.
+    TripCreate model automatically converts local time to UTC.
     """
-    db_client = None
-    notifications_agent = None
+    from .agents.notifications_agent import NotificationsAgent
+    from .agents.notifications_templates import NotificationType
+    from .db.supabase_client import SupabaseDBClient
+    from .models.database import DatabaseResult
+    
+    db_client = SupabaseDBClient()
+    notifications_agent = NotificationsAgent()
     
     try:
-        logger.info("trip_creation_requested", 
-            flight_number=trip_in.flight_number,
-            client_name=trip_in.client_name,
-            whatsapp=trip_in.whatsapp
-        )
+        # Create trip (TripCreate automatically converts local time to UTC)
+        result = await db_client.create_trip(trip_in)
         
-        # Initialize database client
-        db_client = SupabaseDBClient()
+        if not result.success:
+            logger.error("trip_creation_failed", error=result.error)
+            raise HTTPException(status_code=400, detail=result.error)
         
-        # Check for duplicate trips
-        duplicate_check = await db_client.check_duplicate_trip(
-            whatsapp=trip_in.whatsapp,
-            flight_number=trip_in.flight_number,
-            departure_date=trip_in.departure_date
-        )
-        
-        if not duplicate_check.success:
-            logger.error("duplicate_check_failed", 
-                error_code="DUPLICATE_CHECK_FAILED",
-                flight_number=trip_in.flight_number,
-                error=duplicate_check.error
-            )
-            raise HTTPException(
-                status_code=500,
-                detail="Failed to check duplicate trips"
-            )
-        
-        if duplicate_check.data and duplicate_check.data.get("exists"):
-            logger.warning("duplicate_trip_rejected", 
-                whatsapp=trip_in.whatsapp,
-                flight_number=trip_in.flight_number,
-                departure_date=trip_in.departure_date.isoformat()
-            )
-            raise HTTPException(
-                status_code=409,
-                detail="Trip already exists for this flight and passenger"
-            )
-        
-        # Create trip in database
-        create_result = await db_client.create_trip(trip_in)
-        
-        if not create_result.success:
-            logger.error("trip_creation_failed", 
-                error_code="TRIP_CREATION_FAILED",
-                flight_number=trip_in.flight_number,
-                error=create_result.error
-            )
-            raise HTTPException(
-                status_code=500, 
-                detail="Failed to create trip"
-            )
-        
-        # Extract created trip
-        trip_data = create_result.data
+        trip_data = result.data
         trip_id = trip_data["id"]
         
-        logger.info("trip_created_successfully", 
-            trip_id=str(trip_id),
-            flight_number=trip_data["flight_number"]
+        logger.info("trip_created", 
+            trip_id=trip_id,
+            client_name=trip_in.client_name,
+            flight_number=trip_in.flight_number,
+            departure_utc=trip_data["departure_date"]  # Already in UTC from TripCreate
         )
-        
-        # Initialize notifications agent and send confirmation
-        notifications_agent = NotificationsAgent()
         
         try:
             confirmation_result = await notifications_agent.send_single_notification(
@@ -123,25 +75,21 @@ async def create_trip(trip_in: TripCreate):
                     from datetime import datetime, timezone
                     
                     def safe_datetime_parse(date_str):
-                        """Safely parse datetime string with or without timezone"""
+                        """Safely parse datetime string with timezone"""
                         if not date_str:
                             return None
                         
-                        # If it's already a datetime object, just ensure it has timezone
                         if isinstance(date_str, datetime):
                             if date_str.tzinfo is None:
                                 return date_str.replace(tzinfo=timezone.utc)
                             return date_str
                         
-                        # Handle different datetime formats from database
+                        # Handle database format - already UTC
                         if date_str.endswith('Z'):
-                            # UTC format: "2025-06-20T15:00:00Z"
                             return datetime.fromisoformat(date_str.replace('Z', '+00:00'))
                         elif '+' in date_str or '-' in date_str.split('T')[1]:
-                            # Timezone format: "2025-06-20T15:00:00-03:00"
                             return datetime.fromisoformat(date_str)
                         else:
-                            # No timezone: "2025-06-20T15:00:00" - assume UTC
                             return datetime.fromisoformat(date_str).replace(tzinfo=timezone.utc)
                     
                     trip_obj = Trip(
@@ -162,75 +110,43 @@ async def create_trip(trip_in: TripCreate):
                     )
                     
                     await scheduler.schedule_immediate_notifications(trip_obj)
-            except Exception as scheduler_error:
-                # Log scheduler error but don't fail the trip creation
-                logger.error("scheduler_integration_failed", 
-                    trip_id=str(trip_id),
-                    scheduler_error=str(scheduler_error),
-                    error_type=type(scheduler_error).__name__
+                    
+                    logger.info("immediate_notifications_scheduled", 
+                        trip_id=trip_id
+                    )
+                    
+            except Exception as e:
+                logger.warning("immediate_scheduling_failed", 
+                    trip_id=trip_id, 
+                    error=str(e)
                 )
             
-            # Close notifications agent resources
-            await notifications_agent.close()
+            return {
+                "success": True,
+                "trip_id": trip_id,
+                "message": "Trip created and confirmation sent",
+                "confirmation_status": confirmation_result.data if confirmation_result else None
+            }
             
-            if confirmation_result.success:
-                return {
-                    "trip_id": str(trip_id),
-                    "status": "confirmation_sent",
-                    "message": "Trip created and confirmation sent successfully",
-                    "next_check_at": trip_data.get("next_check_at", None).isoformat() if trip_data.get("next_check_at") else None
-                }
-            else:
-                return {
-                    "trip_id": str(trip_id),
-                    "status": "confirmation_failed", 
-                    "message": f"Trip created but confirmation failed: {confirmation_result.error}",
-                    "next_check_at": trip_data.get("next_check_at", None).isoformat() if trip_data.get("next_check_at") else None
-                }
-                
         except Exception as e:
-            logger.error("trip_notification_error", 
-                trip_id=str(trip_id),
+            logger.error("confirmation_failed", 
+                trip_id=trip_id,
                 error=str(e)
             )
+            # Trip was created successfully, but confirmation failed
             return {
-                "trip_id": str(trip_id),
-                "status": "confirmation_failed",
-                "message": f"Trip created but notification system failed: {str(e)}",
-                "next_check_at": trip_data.get("next_check_at", None).isoformat() if trip_data.get("next_check_at") else None
+                "success": True,
+                "trip_id": trip_id,
+                "message": "Trip created but confirmation failed",
+                "error": str(e)
             }
-    
-    except ValidationError as e:
-        logger.error("trip_validation_failed", 
-            error_code="VALIDATION_ERROR",
-            flight_number=trip_in.flight_number if hasattr(trip_in, 'flight_number') else 'unknown',
-            validation_errors=str(e)
-        )
-        raise HTTPException(
-            status_code=422,
-            detail="Invalid request data"
-        )
-    
-    except HTTPException:
-        raise  # Re-raise FastAPI exceptions
-    
+        
     except Exception as e:
-        logger.error("trip_endpoint_error", 
-            error_code="INTERNAL_ERROR",
-            flight_number=trip_in.flight_number if hasattr(trip_in, 'flight_number') else 'unknown',
+        logger.error("trip_creation_error", 
+            client_name=trip_in.client_name,
             error=str(e)
         )
-        raise HTTPException(
-            status_code=500,
-            detail="Internal server error"
-        )
-    
-    finally:
-        # Clean up resources
-        if db_client:
-            await db_client.close()
-        if notifications_agent:
-            await notifications_agent.close()
+        raise HTTPException(status_code=500, detail=f"Failed to create trip: {str(e)}")
 
 
 @router.post("/itinerary")
@@ -964,6 +880,8 @@ async def test_flight_notification(trip_id: str):
     """
     Test endpoint to send a real notification for a specific trip.
     Intelligently selects notification type based on departure timing.
+    
+    SIMPLIFIED: Uses new timezone policy - no manual conversions needed.
     """
     try:
         from app.agents.notifications_agent import NotificationsAgent
@@ -972,7 +890,7 @@ async def test_flight_notification(trip_id: str):
         from uuid import UUID
         from datetime import datetime, timezone, timedelta
         
-        # Get trip details to determine appropriate notification type
+        # Get trip details
         db_client = SupabaseDBClient()
         trip_result = await db_client.get_trip_by_id(UUID(trip_id))
         
@@ -984,9 +902,11 @@ async def test_flight_notification(trip_id: str):
             }
         
         trip_data = trip_result.data
-        departure_date = datetime.fromisoformat(trip_data["departure_date"].replace('Z', '+00:00'))
+        
+        # SIMPLIFIED: Parse departure_date (already UTC from database)
+        departure_utc = datetime.fromisoformat(trip_data["departure_date"].replace('Z', '+00:00'))
         now_utc = datetime.now(timezone.utc)
-        time_to_departure = departure_date - now_utc
+        time_to_departure = departure_utc - now_utc
         hours_to_departure = time_to_departure.total_seconds() / 3600
         
         # INTELLIGENT NOTIFICATION TYPE SELECTION based on timing
@@ -999,7 +919,7 @@ async def test_flight_notification(trip_id: str):
             notification_type = NotificationType.BOARDING
             extra_data = {"gate": "Ver pantallas del aeropuerto"}
         elif hours_to_departure <= 4:
-            # 1-4 hours - send departure confirmation (not 24h reminder!)
+            # 1-4 hours - send confirmation
             notification_type = NotificationType.RESERVATION_CONFIRMATION
             extra_data = {}
         elif 20 <= hours_to_departure <= 28:
@@ -1041,7 +961,6 @@ async def test_flight_notification(trip_id: str):
             "trip_id": trip_id,
             "notification_type": notification_type,
             "hours_to_departure": round(hours_to_departure, 2),
-            "timing_logic": f"Selected {notification_type} for {round(hours_to_departure, 2)}h to departure",
             "result": result.data if result.success else result.error,
             "async_system": "operational",
             "timestamp": datetime.now(timezone.utc).isoformat()

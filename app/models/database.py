@@ -8,13 +8,21 @@ from pydantic import BaseModel, Field, validator
 
 
 class TripCreate(BaseModel):
-    """Model for creating new trips."""
+    """
+    Model for creating new trips.
+    
+    TIMEZONE POLICY ENFORCEMENT:
+    =============================
+    All departure_date inputs are treated as LOCAL TIME of the origin airport
+    and automatically converted to UTC for storage. This ensures consistency
+    across all entry points and eliminates timezone confusion.
+    """
     client_name: str = Field(..., min_length=1, max_length=100)
     whatsapp: str = Field(..., min_length=10, max_length=20)  # International format
     flight_number: str = Field(..., min_length=3, max_length=10)
     origin_iata: str = Field(..., min_length=3, max_length=3)
     destination_iata: str = Field(..., min_length=3, max_length=3)
-    departure_date: datetime
+    departure_date: datetime  # INPUT: Local airport time, STORAGE: Converted to UTC
     status: str = "SCHEDULED"  # Default status
     metadata: Optional[dict] = None
     client_description: Optional[str] = None
@@ -34,6 +42,34 @@ class TripCreate(BaseModel):
             raise ValueError('WhatsApp number must be in international format (+1234567890)')
         
         return clean_number
+    
+    @validator('departure_date')
+    def convert_local_to_utc(cls, v, values):
+        """
+        ARCHITECTURAL VALIDATION: Convert local departure time to UTC.
+        
+        This enforces the timezone policy at the model level, ensuring
+        all departure times are consistently stored as UTC regardless
+        of entry point (API, manual script, test, etc.).
+        
+        Args:
+            v: departure_date input (assumed to be local airport time)
+            values: other validated fields (need origin_iata)
+            
+        Returns:
+            UTC datetime for database storage
+        """
+        # Import here to avoid circular imports
+        from ..utils.timezone_utils import parse_local_time_to_utc
+        
+        origin_iata = values.get('origin_iata')
+        if not origin_iata:
+            raise ValueError('origin_iata must be provided before departure_date')
+        
+        # Convert local time to UTC using our timezone policy
+        utc_datetime = parse_local_time_to_utc(v, origin_iata)
+        
+        return utc_datetime
 
 
 class Trip(BaseModel):

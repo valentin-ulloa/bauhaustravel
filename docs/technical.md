@@ -1,5 +1,44 @@
 # Technical Guidelines
 
+## 🕐 **TIMEZONE POLICY (ARCHITECTURAL)**
+
+**CRITICAL SYSTEM-WIDE POLICY** - Implemented to eliminate timezone confusion:
+
+### **📋 POLICY RULES:**
+1. **INPUT**: All departure times are LOCAL TIME of origin airport
+2. **STORAGE**: Automatic conversion to UTC for database storage  
+3. **DISPLAY**: Automatic conversion back to local time for user display
+
+### **🔧 IMPLEMENTATION:**
+- `TripCreate` model automatically converts local → UTC via validator
+- `format_departure_time_*()` functions convert UTC → local for display
+- **NO MANUAL TIMEZONE CONVERSIONS** in endpoints or scripts
+
+### **✅ BENEFITS:**
+- Consistent behavior across all entry points
+- Eliminates double conversion bugs (22:05 → 23:05)
+- User always sees local airport time
+- Developer experience simplified
+
+### **🎯 EXAMPLES:**
+```python
+# ✅ CORRECT - Let TripCreate handle conversion
+trip = TripCreate(
+    departure_date=datetime(2025, 7, 8, 22, 5),  # LHR local time
+    origin_iata="LHR"
+)
+# → Automatically converted to UTC: 2025-07-08T21:05:00+00:00
+
+# ✅ CORRECT - Display functions handle conversion
+formatted = format_departure_time_human(utc_datetime, "LHR")
+# → Returns: "Mar 8 Jul 22:05 hs (LHR)" (back to local time)
+
+# ❌ WRONG - Don't do manual conversions
+utc_time = local_time.astimezone(timezone.utc)  # NEVER DO THIS
+```
+
+---
+
 ## Tech Stack
 - Python 3.11+, FastAPI, async/await
 - Supabase for persistence (PostgreSQL, vector store)

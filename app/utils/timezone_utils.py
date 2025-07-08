@@ -1,4 +1,13 @@
-"""Timezone utilities for flight notifications."""
+"""Timezone utilities for flight notifications.
+
+TIMEZONE POLICY (ARCHITECTURAL):
+====================================
+1. INPUT: All departure times are LOCAL TIME of origin airport
+2. STORAGE: Convert to UTC for database storage  
+3. DISPLAY: Convert back to local time for user display
+
+This ensures consistency across all entry points and eliminates timezone confusion.
+"""
 
 from datetime import datetime, timezone
 from typing import Dict, Optional
@@ -82,12 +91,63 @@ def get_airport_timezone(iata_code: str) -> Optional[pytz.BaseTzInfo]:
     return None
 
 
-def convert_utc_to_local_airport(utc_datetime: datetime, airport_iata: str) -> datetime:
+def parse_local_time_to_utc(local_datetime: datetime, origin_iata: str) -> datetime:
     """
-    Convert UTC datetime to local airport timezone.
+    ARCHITECTURAL: Convert local airport time to UTC for storage.
+    
+    This is the ENTRY POINT for all departure time inputs.
+    Enforces the policy: INPUT = local time, STORAGE = UTC.
     
     Args:
-        utc_datetime: Datetime in UTC
+        local_datetime: Departure time in LOCAL airport timezone (naive or UTC-marked but representing local)
+        origin_iata: IATA code for origin airport
+        
+    Returns:
+        UTC datetime for database storage
+        
+    Example:
+        LHR local 22:05 → UTC 21:05 (during BST)
+        EZE local 14:30 → UTC 17:30 (ART = UTC-3)
+    """
+    import structlog
+    logger = structlog.get_logger()
+    
+    # Remove timezone info if present (treat as naive local time)
+    if local_datetime.tzinfo:
+        local_datetime = local_datetime.replace(tzinfo=None)
+    
+    airport_tz = get_airport_timezone(origin_iata)
+    if not airport_tz:
+        logger.warning("airport_timezone_not_found_assuming_utc", 
+            origin_iata=origin_iata,
+            local_time=local_datetime.isoformat()
+        )
+        # Fallback: treat as UTC
+        return local_datetime.replace(tzinfo=timezone.utc)
+    
+    # Localize to airport timezone, then convert to UTC
+    localized_dt = airport_tz.localize(local_datetime)
+    utc_dt = localized_dt.astimezone(timezone.utc)
+    
+    logger.info("local_time_converted_to_utc",
+        origin_iata=origin_iata,
+        local_time=local_datetime.isoformat(),
+        timezone=str(airport_tz),
+        utc_time=utc_dt.isoformat()
+    )
+    
+    return utc_dt
+
+
+def convert_utc_to_local_airport(utc_datetime: datetime, airport_iata: str) -> datetime:
+    """
+    ARCHITECTURAL: Convert UTC storage time back to local airport timezone.
+    
+    This is the DISPLAY POINT for all departure time outputs.
+    Enforces the policy: STORAGE = UTC, DISPLAY = local time.
+    
+    Args:
+        utc_datetime: Datetime in UTC (from database)
         airport_iata: IATA code for airport timezone
         
     Returns:
@@ -108,14 +168,14 @@ def convert_utc_to_local_airport(utc_datetime: datetime, airport_iata: str) -> d
 
 def format_departure_time_local(utc_datetime: datetime, origin_iata: str) -> str:
     """
-    Format departure time in local airport timezone for notifications.
+    ARCHITECTURAL: Format UTC storage time as local time for notifications.
     
     Args:
-        utc_datetime: Departure time in UTC
+        utc_datetime: Departure time in UTC (from database)
         origin_iata: Origin airport IATA code
         
     Returns:
-        Formatted string like "5 Jul 14:32 hs" in local time
+        Formatted string like "8 Jul 22:05 hs" in local time
     """
     local_time = convert_utc_to_local_airport(utc_datetime, origin_iata)
     
@@ -134,6 +194,37 @@ def format_departure_time_local(utc_datetime: datetime, origin_iata: str) -> str
         formatted = formatted.replace(eng, esp)
     
     return formatted
+
+
+def format_departure_time_human(utc_datetime: datetime, origin_iata: str) -> str:
+    """
+    ARCHITECTURAL: Format UTC storage time as human-readable local time.
+    
+    Args:
+        utc_datetime: Departure time in UTC (from database)
+        origin_iata: Origin airport IATA code
+        
+    Returns:
+        Human readable string like "Mar 8 Jul 22:05 hs (LHR)" in local time
+    """
+    local_time = convert_utc_to_local_airport(utc_datetime, origin_iata)
+    
+    # Spanish day abbreviations
+    day_names = {
+        0: "Lun", 1: "Mar", 2: "Mié", 3: "Jue", 
+        4: "Vie", 5: "Sáb", 6: "Dom"
+    }
+    
+    # Spanish month abbreviations  
+    month_names = {
+        1: "Ene", 2: "Feb", 3: "Mar", 4: "Abr", 5: "May", 6: "Jun",
+        7: "Jul", 8: "Ago", 9: "Sep", 10: "Oct", 11: "Nov", 12: "Dic"
+    }
+    
+    day_abbr = day_names[local_time.weekday()]
+    month_abbr = month_names[local_time.month]
+    
+    return f"{day_abbr} {local_time.day} {month_abbr} {local_time.strftime('%H:%M')} hs ({origin_iata})"
 
 
 def is_quiet_hours_local(utc_datetime: datetime, airport_iata: str) -> bool:
@@ -211,42 +302,6 @@ def should_suppress_notification(
     
     # For reminders, check quiet hours in local airport time
     return is_quiet_hours_local(utc_datetime, airport_iata)
-
-
-def format_departure_time_human(utc_datetime: datetime, origin_iata: str) -> str:
-    """
-    Format departure time in human-readable format.
-    
-    FIXED: Show time as stored (assuming it was entered in local airport time)
-    to avoid double timezone conversion that was causing 22:05 → 23:05 bug.
-    
-    Args:
-        utc_datetime: Departure time (typically in UTC but represents local time)
-        origin_iata: Origin airport IATA code
-        
-    Returns:
-        Human readable string like "Mar 8 Jul 22:05 hs (LHR)"
-    """
-    # FIXED: Use UTC time directly without local conversion
-    # This assumes the stored time already represents local airport time
-    display_time = utc_datetime.replace(tzinfo=None)  # Remove timezone info for display
-    
-    # Spanish day abbreviations
-    day_names = {
-        0: "Lun", 1: "Mar", 2: "Mié", 3: "Jue", 
-        4: "Vie", 5: "Sáb", 6: "Dom"
-    }
-    
-    # Spanish month abbreviations  
-    month_names = {
-        1: "Ene", 2: "Feb", 3: "Mar", 4: "Abr", 5: "May", 6: "Jun",
-        7: "Jul", 8: "Ago", 9: "Sep", 10: "Oct", 11: "Nov", 12: "Dic"
-    }
-    
-    day_abbr = day_names[display_time.weekday()]
-    month_abbr = month_names[display_time.month]
-    
-    return f"{day_abbr} {display_time.day} {month_abbr} {display_time.strftime('%H:%M')} hs ({origin_iata})"
 
 
 def round_eta_to_5min(dt: datetime) -> str:
