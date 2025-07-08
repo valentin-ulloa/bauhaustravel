@@ -265,13 +265,14 @@ class AeroAPIClient:
             flight = flights[0]
             
             # Extract key fields with safe defaults
+            # FIXED: Map AeroAPI JSON fields correctly based on investigation
             status = FlightStatus(
                 ident=flight.get("ident", flight_number),
                 status=flight.get("status", "Unknown"),
                 estimated_out=flight.get("estimated_out"),
-                estimated_in=flight.get("estimated_in"),
+                estimated_in=flight.get("estimated_on"),      # AeroAPI uses "estimated_on" for arrival
                 actual_out=flight.get("actual_out"),
-                actual_in=flight.get("actual_in"),
+                actual_in=flight.get("actual_on"),            # AeroAPI uses "actual_on" for landing time
                 gate_origin=flight.get("gate_origin"),
                 gate_destination=flight.get("gate_destination"),
                 departure_delay=flight.get("departure_delay", 0),

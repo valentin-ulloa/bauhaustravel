@@ -321,6 +321,25 @@ class NotificationsAgent:
                     # Save current status to database
                     await self._save_flight_status(trip, current_status)
                     
+                    # CRITICAL: Update trip status to LANDED if flight landed
+                    # AeroAPI uses "Arrived / Gate Arrival" and progress_percent: 100 for landed flights
+                    is_landed = (
+                        "arrived" in current_status.status.lower() or 
+                        "gate arrival" in current_status.status.lower() or
+                        (current_status.progress_percent and current_status.progress_percent >= 100) or
+                        current_status.actual_in  # Has actual landing time
+                    )
+                    
+                    if is_landed:
+                        await self.db_client.update_trip_status(trip.id, {"status": "LANDED"})
+                        logger.info("trip_status_updated_to_landed", 
+                            trip_id=str(trip.id),
+                            flight_number=trip.flight_number,
+                            flight_status=current_status.status,
+                            progress_percent=current_status.progress_percent,
+                            actual_landing_time=current_status.actual_in
+                        )
+                    
                     # Process each consolidated change and send notifications
                     for change in consolidated_changes:
                         # FIXED: Let _process_flight_change handle quiet hours via should_suppress_notification
@@ -329,7 +348,15 @@ class NotificationsAgent:
                         notifications_sent += 1
                     
                     # Update next check time based on poll optimization rules
-                    next_check = self.calculate_next_check_time(trip.departure_date, now_utc)
+                    # Extract arrival time from current flight status if available
+                    arrival_time = None
+                    if current_status.estimated_in:
+                        try:
+                            arrival_time = datetime.fromisoformat(current_status.estimated_in.replace('Z', '+00:00'))
+                        except:
+                            pass
+                    
+                    next_check = self.calculate_next_check_time(trip.departure_date, now_utc, arrival_time)
                     await self.db_client.update_next_check_at(trip.id, next_check)
                     
                     success_count += 1
@@ -437,12 +464,12 @@ class NotificationsAgent:
             )
             
             if result.success:
-                # Also update trip table for quick access
-                update_data = {
-                    "status": status.status,
-                    "gate": status.gate_origin
-                }
-                await self.db_client.update_trip_status(trip.id, update_data)
+                # FIXED: Use comprehensive update instead of partial update
+                await self.db_client.update_trip_comprehensive(
+                    trip.id, 
+                    status,
+                    update_metadata=True
+                )
                 
                 logger.info("flight_status_saved", 
                     trip_id=str(trip.id),
@@ -750,9 +777,18 @@ class NotificationsAgent:
                         departure_date_str
                     )
                     
-                    if current_status and current_status.status.upper() in ["LANDED", "ARRIVED", "COMPLETED"]:
-                        # Save the landed status to history
-                        await self._save_flight_status(trip, current_status)
+                    # Check if flight has landed using correct AeroAPI indicators
+                    if current_status:
+                        is_landed = (
+                            "arrived" in current_status.status.lower() or 
+                            "gate arrival" in current_status.status.lower() or
+                            (current_status.progress_percent and current_status.progress_percent >= 100) or
+                            current_status.actual_in  # Has actual landing time from AeroAPI
+                        )
+                        
+                        if is_landed:
+                            # Save the landed status to history
+                            await self._save_flight_status(trip, current_status)
                         
                         # Check quiet hours before sending
                         is_quiet_hours = is_quiet_hours_local(now_utc, trip.destination_iata)
@@ -1035,28 +1071,52 @@ class NotificationsAgent:
         else:
             raise ValueError(f"Unknown notification type: {notification_type}")
     
-    def calculate_next_check_time(self, departure_time: datetime, now_utc: datetime) -> datetime:
+    def calculate_next_check_time(self, departure_time: datetime, now_utc: datetime, arrival_time: Optional[datetime] = None) -> datetime:
         """
-        Calculate next polling time based on poll optimization rules.
+        Calculate next polling time based on poll optimization rules for FULL FLIGHT LIFECYCLE.
         
         Rules from TC-001:
+        PRE-DEPARTURE:
         - > 24h: +6h
         - 24h-4h: +1h  
         - ≤ 4h: +15min
-        - In-flight: +30min
+        
+        IN-FLIGHT (after departure, before arrival):
+        - Poll every 30min to track arrival updates
+        
+        ARRIVAL PHASE (within 1h of expected arrival):
+        - Poll every 10min for precise landing detection
         """
         time_until_departure = departure_time - now_utc
-        hours_until = time_until_departure.total_seconds() / 3600
+        hours_until_departure = time_until_departure.total_seconds() / 3600
         
-        if hours_until > 24:
+        # PRE-DEPARTURE PHASE
+        if hours_until_departure > 24:
             return now_utc + timedelta(hours=6)
-        elif hours_until > 4:
+        elif hours_until_departure > 4:
             return now_utc + timedelta(hours=1)
-        elif hours_until > 0:
+        elif hours_until_departure > 0:
             return now_utc + timedelta(minutes=15)
+        
+        # POST-DEPARTURE PHASE
         else:
-            # In-flight or landed
-            return now_utc + timedelta(minutes=30)
+            # If we have arrival time info, use smart arrival tracking
+            if arrival_time:
+                time_until_arrival = arrival_time - now_utc
+                hours_until_arrival = time_until_arrival.total_seconds() / 3600
+                
+                if hours_until_arrival > 1:
+                    # In-flight, more than 1h to arrival: check every 30min
+                    return now_utc + timedelta(minutes=30)
+                elif hours_until_arrival > -0.5:  # Up to 30min past expected arrival
+                    # Arrival phase: check every 10min for precise landing detection
+                    return now_utc + timedelta(minutes=10)
+                else:
+                    # More than 30min past arrival: likely landed, check every 1h until confirmed
+                    return now_utc + timedelta(hours=1)
+            else:
+                # No arrival time available: generic in-flight polling every 30min
+                return now_utc + timedelta(minutes=30)
     
     async def close(self):
         """Clean up resources."""

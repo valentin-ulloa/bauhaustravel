@@ -42,7 +42,9 @@ class SupabaseDBClient:
     
     async def get_trips_to_poll(self, now_utc: datetime) -> List[Trip]:
         """
-        Query trips where next_check_at <= now_utc.
+        Query trips where next_check_at <= now_utc AND status != 'LANDED'.
+        
+        FIXED: Poll trips in all phases (pre-departure, in-flight, landing) until status = LANDED.
         
         Args:
             now_utc: Current UTC datetime for comparison
@@ -57,8 +59,10 @@ class SupabaseDBClient:
             response = await self._client.get(
                 f"{self.rest_url}/trips",
                 params={
-                    "next_check_at": f"lte.{now_str}",
-                    "select": "*"
+                    "next_check_at": f"lte.{now_str}",      # Due for checking
+                    "status": f"neq.LANDED",                # FIXED: Exclude only LANDED flights
+                    "select": "*",
+                    "order": "next_check_at.asc"            # Process oldest first
                 }
             )
             response.raise_for_status()
@@ -68,7 +72,8 @@ class SupabaseDBClient:
             
             logger.info("trips_queried", 
                 count=len(trips), 
-                query_time=now_str
+                query_time=now_str,
+                criteria="next_check_at <= now AND status != LANDED"
             )
             
             return trips
@@ -1401,6 +1406,220 @@ class SupabaseDBClient:
             
         except Exception as e:
             logger.error("execute_query_failed", error=str(e))
+            return DatabaseResult(
+                success=False,
+                error=str(e)
+            )
+
+    async def update_trip_comprehensive(
+        self, 
+        trip_id: UUID, 
+        flight_status: 'FlightStatus',
+        update_metadata: bool = True
+    ) -> DatabaseResult:
+        """
+        Update trip with comprehensive flight data from AeroAPI.
+        
+        This method ensures the trips table stays synchronized with the latest
+        flight information, addressing the critical data consistency issue.
+        
+        Args:
+            trip_id: UUID of the trip to update
+            flight_status: FlightStatus object from AeroAPI
+            update_metadata: Whether to update metadata field with detailed info
+            
+        Returns:
+            DatabaseResult with operation status
+        """
+        try:
+            update_data = {
+                "status": flight_status.status,
+                "gate": flight_status.gate_origin,
+                "updated_at": datetime.now(timezone.utc).isoformat()
+            }
+            
+            # Update departure_date if we have estimated_out
+            if flight_status.estimated_out:
+                try:
+                    # Parse and convert estimated_out to proper datetime
+                    estimated_dt = datetime.fromisoformat(
+                        flight_status.estimated_out.replace('Z', '+00:00')
+                    )
+                    update_data["departure_date"] = estimated_dt.isoformat()
+                except ValueError as e:
+                    logger.warning("invalid_estimated_out_format", 
+                        trip_id=str(trip_id),
+                        estimated_out=flight_status.estimated_out,
+                        error=str(e)
+                    )
+            
+            # Update comprehensive metadata
+            if update_metadata:
+                metadata = {
+                    "last_aeroapi_sync": datetime.now(timezone.utc).isoformat(),
+                    "flight_data": {
+                        "gate_destination": flight_status.gate_destination,
+                        "estimated_in": flight_status.estimated_in,
+                        "actual_out": flight_status.actual_out,
+                        "actual_in": flight_status.actual_in,
+                        "aircraft_type": flight_status.aircraft_type,
+                        "progress_percent": flight_status.progress_percent,
+                        "departure_delay": flight_status.departure_delay,
+                        "arrival_delay": flight_status.arrival_delay,
+                        "cancelled": flight_status.cancelled,
+                        "diverted": flight_status.diverted,
+                        "origin_iata": flight_status.origin_iata,
+                        "destination_iata": flight_status.destination_iata
+                    }
+                }
+                update_data["metadata"] = metadata
+            
+            # Execute update
+            response = await self._client.patch(
+                f"{self.rest_url}/trips",
+                params={"id": f"eq.{trip_id}"},
+                json=update_data
+            )
+            response.raise_for_status()
+            
+            updated_data = response.json()
+            
+            logger.info("trip_comprehensive_update_success", 
+                trip_id=str(trip_id),
+                status=flight_status.status,
+                gate=flight_status.gate_origin,
+                estimated_out=flight_status.estimated_out,
+                updated_fields=list(update_data.keys())
+            )
+            
+            return DatabaseResult(
+                success=True,
+                data=updated_data[0] if updated_data else None,
+                affected_rows=1 if updated_data else 0
+            )
+            
+        except Exception as e:
+            logger.error("trip_comprehensive_update_failed", 
+                trip_id=str(trip_id),
+                error=str(e)
+            )
+            return DatabaseResult(
+                success=False,
+                error=str(e)
+            )
+    
+    async def resync_trip_from_aeroapi(self, trip_id: UUID) -> DatabaseResult:
+        """
+        Force resync a trip with current AeroAPI data.
+        
+        This method fetches fresh data from AeroAPI and updates both
+        the trips table and flight_status_history.
+        
+        Args:
+            trip_id: UUID of the trip to resync
+            
+        Returns:
+            DatabaseResult with operation status
+        """
+        try:
+            # Get trip data
+            trip_result = await self.get_trip_by_id(trip_id)
+            if not trip_result.success or not trip_result.data:
+                return DatabaseResult(
+                    success=False,
+                    error="Trip not found"
+                )
+            
+            trip_data = trip_result.data
+            
+            # Import AeroAPIClient here to avoid circular import
+            from ..services.aeroapi_client import AeroAPIClient
+            
+            aeroapi_client = AeroAPIClient()
+            
+            # Get fresh flight status
+            departure_date = datetime.fromisoformat(
+                trip_data["departure_date"].replace('Z', '+00:00')
+            )
+            flight_date_str = departure_date.strftime("%Y-%m-%d")
+            
+            current_status = await aeroapi_client.get_flight_status(
+                trip_data["flight_number"],
+                flight_date_str
+            )
+            
+            if not current_status:
+                return DatabaseResult(
+                    success=False,
+                    error="No flight data available from AeroAPI"
+                )
+            
+            # Update trips table comprehensively
+            update_result = await self.update_trip_comprehensive(
+                trip_id, 
+                current_status,
+                update_metadata=True
+            )
+            
+            if not update_result.success:
+                return update_result
+            
+            # Save to flight_status_history (if permissions allow)
+            try:
+                history_result = await self.save_flight_status(
+                    trip_id=trip_id,
+                    flight_number=current_status.ident,
+                    flight_date=flight_date_str,
+                    status=current_status.status,
+                    gate_origin=current_status.gate_origin,
+                    gate_destination=current_status.gate_destination,
+                    estimated_out=current_status.estimated_out,
+                    actual_out=current_status.actual_out,
+                    estimated_in=current_status.estimated_in,
+                    actual_in=current_status.actual_in,
+                    source="manual_resync"
+                )
+                
+                if history_result.success:
+                    logger.info("flight_status_history_updated", trip_id=str(trip_id))
+                else:
+                    logger.warning("flight_status_history_update_failed", 
+                        trip_id=str(trip_id),
+                        error=history_result.error
+                    )
+                    
+            except Exception as history_error:
+                logger.warning("flight_status_history_permission_denied", 
+                    trip_id=str(trip_id),
+                    error=str(history_error)
+                )
+            
+            logger.info("trip_resync_completed", 
+                trip_id=str(trip_id),
+                flight_number=trip_data["flight_number"],
+                new_status=current_status.status,
+                new_gate=current_status.gate_origin
+            )
+            
+            return DatabaseResult(
+                success=True,
+                data={
+                    "trip_updated": True,
+                    "flight_status": {
+                        "status": current_status.status,
+                        "gate": current_status.gate_origin,
+                        "estimated_out": current_status.estimated_out,
+                        "progress": current_status.progress_percent
+                    }
+                },
+                affected_rows=1
+            )
+            
+        except Exception as e:
+            logger.error("trip_resync_failed", 
+                trip_id=str(trip_id),
+                error=str(e)
+            )
             return DatabaseResult(
                 success=False,
                 error=str(e)
