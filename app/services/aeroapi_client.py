@@ -36,6 +36,8 @@ class FlightStatus:
     scheduled_in: Optional[str] = None           # Scheduled arrival time  
     scheduled_block_time_minutes: Optional[int] = None  # Total block time in minutes
     filed_ete: Optional[int] = None              # Filed Estimated Time Enroute (minutes)
+    # ENHANCED: Complete raw AeroAPI response for full data preservation
+    raw_aeroapi_response: Optional[Dict[str, Any]] = None
 
 @dataclass
 class CacheEntry:
@@ -213,6 +215,17 @@ class AeroAPIClient:
                 if response.status_code == 200:
                     data = response.json()
                     flight_status = self._parse_flight_response_optimized(data, flight_number)
+                    
+                    # ENHANCED: Attach complete raw JSON to FlightStatus for preservation
+                    if flight_status:
+                        # Store the complete original AeroAPI response
+                        flight_status.raw_aeroapi_response = data
+                        
+                        logger.info("complete_aeroapi_response_attached", 
+                            flight_number=flight_number,
+                            raw_data_size_kb=len(str(data)) / 1024,
+                            flight_count=len(data.get("flights", []))
+                        )
                     
                     # Cache successful response
                     self._cache_status(flight_number, departure_date, flight_status)

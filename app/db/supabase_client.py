@@ -1406,19 +1406,24 @@ class SupabaseDBClient:
         """
         Get trips that departed after the given threshold (for landing detection).
         
+        FIXED: Now respects next_check_at to prevent API abuse.
+        
         Args:
             departure_threshold: Datetime threshold for departure
             
         Returns:
-            List of Trip objects
+            List of Trip objects that BOTH departed recently AND are due for checking
         """
         try:
             threshold_str = departure_threshold.isoformat()
+            now_str = datetime.now(timezone.utc).isoformat()
             
             response = await self._client.get(
                 f"{self.rest_url}/trips",
                 params={
                     "departure_date": f"gte.{threshold_str}",
+                    "next_check_at": f"lte.{now_str}",      # ✅ FIXED: Respect next_check_at
+                    "status": f"neq.LANDED",                # ✅ Don't check already landed flights
                     "select": "*"
                 }
             )
@@ -1427,9 +1432,11 @@ class SupabaseDBClient:
             trips_data = response.json()
             trips = [Trip(**trip_data) for trip_data in trips_data]
             
-            logger.info("trips_after_departure_retrieved", 
+            logger.info("trips_after_departure_retrieved_with_next_check_filter", 
                 count=len(trips),
-                threshold=threshold_str
+                threshold=threshold_str,
+                now=now_str,
+                note="now_respects_next_check_at_to_prevent_api_abuse"
             )
             
             return trips

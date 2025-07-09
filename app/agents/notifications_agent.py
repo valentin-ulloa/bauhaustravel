@@ -473,11 +473,42 @@ class NotificationsAgent:
             return None
     
     async def _save_flight_status_optimized(self, trip: Trip, status: FlightStatus):
-        """Save flight status with OPTIMIZED database updates."""
+        """Save flight status with OPTIMIZED database updates and COMPLETE raw data preservation."""
         try:
             flight_date = trip.departure_date.strftime("%Y-%m-%d")
             
-            # Save to history
+            # ENHANCED: Create raw_data with COMPLETE AeroAPI response preservation
+            raw_data = {
+                # Structured fields for quick access
+                "ident": status.ident,
+                "status": status.status,
+                "estimated_out": status.estimated_out,
+                "estimated_in": status.estimated_in,
+                "actual_out": status.actual_out,
+                "actual_in": status.actual_in,
+                "gate_origin": status.gate_origin,
+                "gate_destination": status.gate_destination,
+                "departure_delay": status.departure_delay,
+                "arrival_delay": status.arrival_delay,
+                "cancelled": status.cancelled,
+                "diverted": status.diverted,
+                "origin_iata": status.origin_iata,
+                "destination_iata": status.destination_iata,
+                "aircraft_type": status.aircraft_type,
+                "progress_percent": status.progress_percent,
+                # Extended fields for complete data preservation
+                "scheduled_out": status.scheduled_out,
+                "scheduled_in": status.scheduled_in,
+                "scheduled_block_time_minutes": status.scheduled_block_time_minutes,
+                "filed_ete": status.filed_ete,
+                # COMPLETE AeroAPI response (the FULL JSON!)
+                "complete_aeroapi_response": getattr(status, 'raw_aeroapi_response', None),
+                # Metadata for traceability
+                "saved_at": datetime.now(timezone.utc).isoformat(),
+                "source": "notifications_agent_optimized"
+            }
+            
+            # Save to history with COMPLETE raw data
             await self.db_client.save_flight_status(
                 trip_id=trip.id,
                 flight_number=status.ident,
@@ -489,11 +520,18 @@ class NotificationsAgent:
                 actual_out=status.actual_out,
                 estimated_in=status.estimated_in,
                 actual_in=status.actual_in,
+                raw_data=raw_data,  # ← COMPLETE DATA STORED HERE
                 source="unified_polling"
             )
             
-            # Update trip with comprehensive data
+            # Update trip with comprehensive data (structured fields for quick access)
             await self.db_client.update_trip_comprehensive(trip.id, status, update_metadata=True)
+            
+            logger.info("flight_status_saved_with_complete_data", 
+                trip_id=str(trip.id),
+                raw_data_fields=len(raw_data),
+                structured_metadata_updated=True
+            )
             
         except Exception as e:
             logger.error("flight_status_save_failed", 
@@ -569,17 +607,55 @@ class NotificationsAgent:
             extra_data["old_gate"] = change["old_value"]
             
         elif change_type == "departure_time_change":
-            # Format time using proper timezone
+            # ROBUST time parsing to avoid "Por confirmar" issues
             new_time = change["new_value"]
-            if new_time and "T" in new_time:
+            formatted_time = "Por confirmar"
+            
+            if new_time:
+                # Try multiple parsing strategies
+                parsed_dt = None
+                
+                # Strategy 1: Standard ISO format with Z
                 try:
-                    dt = datetime.fromisoformat(new_time.replace('Z', '+00:00'))
-                    formatted_time = format_departure_time_human(dt, trip.origin_iata)
-                    extra_data["new_departure_time"] = formatted_time
-                except:
-                    extra_data["new_departure_time"] = "Por confirmar"
-            else:
-                extra_data["new_departure_time"] = "Por confirmar"
+                    if new_time.endswith('Z'):
+                        parsed_dt = datetime.fromisoformat(new_time.replace('Z', '+00:00'))
+                    elif '+' in new_time or new_time.count('-') >= 3:  # Has timezone
+                        parsed_dt = datetime.fromisoformat(new_time)
+                    elif 'T' in new_time:  # ISO format without timezone
+                        parsed_dt = datetime.fromisoformat(new_time).replace(tzinfo=timezone.utc)
+                except ValueError:
+                    pass
+                
+                # Strategy 2: Try parsing as timestamp if ISO failed
+                if not parsed_dt and new_time.isdigit():
+                    try:
+                        parsed_dt = datetime.fromtimestamp(int(new_time), timezone.utc)
+                    except (ValueError, OSError):
+                        pass
+                
+                # If we successfully parsed, format it properly
+                if parsed_dt:
+                    try:
+                        formatted_time = format_departure_time_human(parsed_dt, trip.origin_iata)
+                        logger.info("successful_time_parsing", 
+                            trip_id=str(trip.id),
+                            raw_time=new_time,
+                            formatted_time=formatted_time
+                        )
+                    except Exception as e:
+                        logger.warning("time_formatting_failed", 
+                            trip_id=str(trip.id),
+                            raw_time=new_time,
+                            error=str(e)
+                        )
+                else:
+                    logger.warning("time_parsing_failed_all_strategies", 
+                        trip_id=str(trip.id),
+                        raw_time=new_time,
+                        fallback="Por confirmar"
+                    )
+            
+            extra_data["new_departure_time"] = formatted_time
                 
         elif notification_type == "boarding":
             # CRITICAL FIX: Always fetch fresh gate data before boarding notification
@@ -764,19 +840,32 @@ class NotificationsAgent:
         """
         notification_type_db = notification_type.value.upper()
         
-        # SIMPLIFIED idempotency hash
+        # ENHANCED idempotency hash - includes content to prevent duplicates with different content
+        current_time = datetime.now(timezone.utc)
+        
+        # Include extra_data content for true uniqueness
+        content_hash = ""
+        if extra_data:
+            # Sort and hash the actual content to detect changes
+            content_hash = hashlib.sha256(
+                json.dumps(extra_data, sort_keys=True).encode()
+            ).hexdigest()[:8]
+        
         idempotency_data = {
             "trip_id": str(trip.id),
             "notification_type": notification_type_db,
-            "date": datetime.now(timezone.utc).strftime("%Y-%m-%d")  # Daily uniqueness
+            "date": current_time.strftime("%Y-%m-%d"),
+            "hour": current_time.strftime("%H"),  # Hour-level uniqueness
+            "content_hash": content_hash  # Content-based uniqueness
         }
         idempotency_hash = hashlib.sha256(
             json.dumps(idempotency_data, sort_keys=True).encode()
         ).hexdigest()[:16]
         
-        # Check if notification already sent today
+        # Check if notification already sent (enhanced with cooldown)
         try:
-            existing = await self.db_client.execute_query(
+            # Check for exact duplicate (same idempotency hash)
+            duplicate_check = await self.db_client.execute_query(
                 """
                 SELECT id FROM notifications_log 
                 WHERE trip_id = %s AND notification_type = %s AND idempotency_hash = %s 
@@ -786,9 +875,32 @@ class NotificationsAgent:
                 (str(trip.id), notification_type_db, idempotency_hash)
             )
             
-            if existing.data:
-                return DatabaseResult(success=True, data={"status": "already_sent_today"})
-        except Exception:
+            if duplicate_check.data:
+                return DatabaseResult(success=True, data={"status": "already_sent_exact_duplicate"})
+            
+            # COOLDOWN CHECK: Prevent notifications of same type within 5 minutes
+            cooldown_check = await self.db_client.execute_query(
+                """
+                SELECT id FROM notifications_log 
+                WHERE trip_id = %s AND notification_type = %s 
+                AND delivery_status = 'SENT'
+                AND sent_at > %s
+                ORDER BY sent_at DESC
+                LIMIT 1
+                """,
+                (str(trip.id), notification_type_db, (current_time - timedelta(minutes=5)).isoformat())
+            )
+            
+            if cooldown_check.data:
+                logger.warning("notification_blocked_by_cooldown", 
+                    trip_id=str(trip.id),
+                    notification_type=notification_type_db,
+                    cooldown_minutes=5
+                )
+                return DatabaseResult(success=True, data={"status": "blocked_by_cooldown"})
+                
+        except Exception as e:
+            logger.warning("idempotency_check_failed", error=str(e))
             pass  # Continue with send attempt
         
         try:
@@ -918,67 +1030,165 @@ class NotificationsAgent:
         notification_type: NotificationType, 
         extra_data: Optional[Dict[str, Any]] = None
     ) -> DatabaseResult:
-        """Send a single notification for a specific trip."""
+        """
+        Send a single notification for a specific trip.
+        
+        CRITICAL FIX: For boarding notifications, ALWAYS verify AeroAPI first
+        to ensure we have the latest gate information before sending.
+        """
         try:
             trip_result = await self.db_client.get_trip_by_id(trip_id)
             if not trip_result.success or not trip_result.data:
                 return DatabaseResult(success=False, error=f"Trip {trip_id} not found")
             
             trip = Trip(**trip_result.data)
-            return await self.send_notification(trip, notification_type, extra_data)
+            
+            # CRITICAL FIX: For boarding notifications, fetch fresh data from AeroAPI first
+            if notification_type == NotificationType.BOARDING:
+                logger.info("boarding_notification_triggered_aeroapi_check", 
+                    trip_id=str(trip.id),
+                    flight_number=trip.flight_number
+                )
+                
+                enhanced_extra_data = await self._prepare_boarding_notification_data(trip, extra_data)
+                return await self.send_notification(trip, notification_type, enhanced_extra_data)
+            else:
+                return await self.send_notification(trip, notification_type, extra_data)
             
         except Exception as e:
             return DatabaseResult(success=False, error=str(e))
     
-    async def check_single_trip_status(self, trip: Trip) -> DatabaseResult:
+    async def _prepare_boarding_notification_data(
+        self, 
+        trip: Trip, 
+        existing_extra_data: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
         """
-        Check flight status for a single trip with UNIFIED logic.
+        Prepare boarding notification data with COMPLETE gate verification logic.
+        
+        BUSINESS LOGIC (as specified by user):
+        1. Check if trip.gate field has value
+        2. If empty, check metadata for gate information  
+        3. If neither has gate info, fetch fresh from AeroAPI and update
+        4. Only use "Ver pantallas del aeropuerto" if gate still empty after AeroAPI
         """
-        try:
-            flight_date_str = trip.departure_date.strftime("%Y-%m-%d")
-            current_status = await self.aeroapi_client.get_flight_status(
-                trip.flight_number,
-                flight_date_str
+        extra_data = existing_extra_data.copy() if existing_extra_data else {}
+        gate_info = None
+        
+        # STEP 1: Check if trip.gate field has value
+        trip_gate = getattr(trip, 'gate', None)
+        if trip_gate and trip_gate.strip():
+            gate_info = trip_gate
+            logger.info("using_gate_from_trip_field", 
+                trip_id=str(trip.id), 
+                gate=gate_info,
+                source="trip.gate_field"
+            )
+        else:
+            # STEP 2: trip.gate is empty - check metadata for gate information
+            logger.info("trip_gate_field_empty_checking_metadata", 
+                trip_id=str(trip.id),
+                flight_number=trip.flight_number
             )
             
-            if not current_status:
-                return DatabaseResult(
-                    success=True,
-                    data={"trip_id": str(trip.id), "status": "no_flight_data"}
-                )
+            metadata = getattr(trip, 'metadata', {}) or {}
             
-            # Get previous status and detect changes
-            previous_status = await self._get_previous_flight_status(trip)
-            changes = self._detect_meaningful_changes(current_status, previous_status)
+            # Check various metadata fields where gate info might be stored
+            metadata_gate_fields = [
+                'gate_origin', 'gate', 'departure_gate', 
+                'terminal_gate', 'boarding_gate'
+            ]
             
-            # Update trip and save status
-            await self.db_client.update_trip_comprehensive(trip.id, current_status)
-            await self._save_flight_status_optimized(trip, current_status)
-            
-            # Process changes
-            notifications_sent = 0
-            for change in changes:
-                try:
-                    await self._process_flight_change_simplified(trip, change, current_status)
-                    notifications_sent += 1
-                except Exception as change_error:
-                    logger.error("single_trip_change_processing_failed",
+            for field in metadata_gate_fields:
+                if metadata.get(field) and str(metadata[field]).strip():
+                    gate_info = str(metadata[field]).strip()
+                    logger.info("using_gate_from_metadata", 
                         trip_id=str(trip.id),
-                        error=str(change_error)
+                        gate=gate_info,
+                        source=f"metadata.{field}"
                     )
+                    break
             
-            return DatabaseResult(
-                success=True,
-                data={
-                    "trip_id": str(trip.id),
-                    "current_status": current_status.status,
-                    "changes_detected": len(changes),
-                    "notifications_sent": notifications_sent
-                }
+            # STEP 3: Neither trip.gate nor metadata has gate info - fetch from AeroAPI
+            if not gate_info:
+                logger.info("no_gate_in_db_or_metadata_fetching_aeroapi", 
+                    trip_id=str(trip.id),
+                    flight_number=trip.flight_number,
+                    reason="Both trip.gate and metadata empty, checking AeroAPI"
+                )
+                
+                try:
+                    departure_date_str = trip.departure_date.strftime("%Y-%m-%d")
+                    fresh_status = await self.aeroapi_client.get_flight_status(
+                        trip.flight_number, 
+                        departure_date_str
+                    )
+                    
+                    if fresh_status:
+                        # Update trip comprehensively with fresh AeroAPI data
+                        update_result = await self.db_client.update_trip_comprehensive(
+                            trip.id, 
+                            fresh_status,
+                            update_metadata=True
+                        )
+                        
+                        if fresh_status.gate_origin:
+                            gate_info = fresh_status.gate_origin
+                            logger.info("gate_found_and_updated_from_aeroapi", 
+                                trip_id=str(trip.id),
+                                new_gate=gate_info,
+                                flight_number=trip.flight_number,
+                                success="AVOIDED generic message through AeroAPI"
+                            )
+                        else:
+                            logger.info("aeroapi_called_but_no_gate_assigned", 
+                                trip_id=str(trip.id),
+                                flight_number=trip.flight_number,
+                                aeroapi_status=fresh_status.status,
+                                message="Airline has not assigned gate yet"
+                            )
+                        
+                        if update_result.success:
+                            logger.info("trip_updated_with_fresh_aeroapi_data", 
+                                trip_id=str(trip.id),
+                                flight_number=trip.flight_number
+                            )
+                    else:
+                        logger.warning("aeroapi_returned_no_flight_data", 
+                            trip_id=str(trip.id),
+                            flight_number=trip.flight_number,
+                            departure_date=departure_date_str
+                        )
+                        
+                except Exception as e:
+                    logger.error("aeroapi_fetch_failed_during_boarding_prep", 
+                        trip_id=str(trip.id),
+                        flight_number=trip.flight_number,
+                        error=str(e)
+                    )
+        
+        # STEP 4: Final fallback only if gate still empty after all checks
+        if not gate_info:
+            gate_info = "Ver pantallas del aeropuerto"
+            logger.warning("using_fallback_message_after_complete_verification", 
+                trip_id=str(trip.id),
+                flight_number=trip.flight_number,
+                reason="No gate found in: trip.gate, metadata, or AeroAPI - airline has not assigned gate"
             )
-            
-        except Exception as e:
-            return DatabaseResult(success=False, error=str(e))
+        
+        extra_data["gate"] = gate_info
+        
+        # Log the complete verification path for debugging
+        logger.info("boarding_gate_verification_completed", 
+            trip_id=str(trip.id),
+            final_gate=gate_info,
+            is_specific_gate=gate_info != "Ver pantallas del aeropuerto"
+        )
+        
+        return extra_data
+    
+    # REMOVED: check_single_trip_status() method to eliminate race condition
+    # All polling now goes through poll_flight_changes() for single entry point
     
     async def send_free_text(
         self,

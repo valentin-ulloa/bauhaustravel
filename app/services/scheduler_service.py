@@ -55,11 +55,11 @@ class SchedulerService:
                 replace_existing=True
             )
             
-            # Job 2: UNIFIED intelligent polling (every 5 minutes)
+            # Job 2: INTELLIGENT polling (respects next_check_at times)
             self.scheduler.add_job(
-                self._process_unified_flight_polling,
-                IntervalTrigger(minutes=5),
-                id='unified_flight_polling',
+                self._process_intelligent_flight_polling,
+                IntervalTrigger(minutes=5),  # ✅ Check DB every 5min but only API call if next_check_at <= now
+                id='intelligent_flight_polling',
                 max_instances=1,
                 replace_existing=True
             )
@@ -130,8 +130,8 @@ class SchedulerService:
                 
                 logger.info("immediate_reminder_scheduled", trip_id=str(trip.id))
             
-            # Schedule boarding notification (40 minutes before departure)
-            boarding_time = trip.departure_date - timedelta(minutes=40)
+            # Schedule boarding notification (35 minutes before departure)
+            boarding_time = trip.departure_date - timedelta(minutes=35)
             if boarding_time > now_utc:
                 job_id = f"boarding_{trip.id}"
                 self.scheduler.add_job(
@@ -204,93 +204,38 @@ class SchedulerService:
         except Exception as e:
             logger.error("24h_reminders_exception", error=str(e))
     
-    async def _process_unified_flight_polling(self):
+    async def _process_intelligent_flight_polling(self):
         """
-        UNIFIED flight polling using calculate_unified_next_check().
+        CONSOLIDATED flight polling - delegates to NotificationsAgent.
         
-        ELIMINATES duplication with NotificationsAgent.
+        FIXES: Eliminates race condition by having single entry point.
         """
         try:
-            now_utc = datetime.now(timezone.utc)
+            logger.info("intelligent_polling_delegating_to_notifications_agent")
             
-            logger.info("unified_polling_check", current_time=now_utc.isoformat())
+            # SINGLE ENTRY POINT: Use NotificationsAgent.poll_flight_changes()
+            result = await self.notifications_agent.poll_flight_changes()
             
-            # Get trips that need polling
-            trips_to_poll = await self.db_client.get_trips_to_poll(now_utc)
-            
-            if not trips_to_poll:
-                logger.info("unified_polling_no_trips_ready")
-                return
-            
-            logger.info("unified_polling_processing_trips", 
-                trips_count=len(trips_to_poll)
-            )
-            
-            processed_count = 0
-            for trip in trips_to_poll:
-                try:
-                    # Use unified agent check
-                    result = await self.notifications_agent.check_single_trip_status(trip)
-                    
-                    if result.success:
-                        processed_count += 1
-                        
-                        # UNIFIED next_check_at calculation
-                        next_check = calculate_unified_next_check(
-                            departure_time=trip.departure_date,
-                            now_utc=now_utc,
-                            current_status=result.data.get("current_status", "UNKNOWN")
-                        )
-                        
-                        if next_check:
-                            await self.db_client.update_next_check_at(trip.id, next_check)
-                        
-                        logger.info("unified_polling_trip_processed", 
-                            trip_id=str(trip.id),
-                            next_check=next_check.isoformat() if next_check else "no_more_polling"
-                        )
-                    else:
-                        logger.warning("unified_polling_trip_failed", 
-                            trip_id=str(trip.id),
-                            error=result.error
-                        )
-                        
-                        # On error, use unified calculation with fallback
-                        next_check = calculate_unified_next_check(
-                            trip.departure_date, now_utc, "ERROR"
-                        )
-                        if next_check:
-                            await self.db_client.update_next_check_at(trip.id, next_check)
-                        
-                except Exception as trip_error:
-                    logger.error("unified_polling_trip_exception", 
-                        trip_id=str(trip.id),
-                        error=str(trip_error)
-                    )
-                    
-                    # On exception, use unified calculation
-                    next_check = calculate_unified_next_check(
-                        trip.departure_date, now_utc, "EXCEPTION"
-                    )
-                    if next_check:
-                        await self.db_client.update_next_check_at(trip.id, next_check)
-            
-            logger.info("unified_polling_completed", 
-                processed_count=processed_count,
-                total_trips=len(trips_to_poll)
-            )
+            if result.success:
+                logger.info("intelligent_polling_completed_via_agent", 
+                    data=result.data
+                )
+            else:
+                logger.error("intelligent_polling_failed_via_agent", 
+                    error=result.error
+                )
                 
         except Exception as e:
-            logger.error("unified_polling_exception", error=str(e))
+            logger.error("intelligent_polling_exception", error=str(e))
     
     async def _process_boarding_notifications(self):
         """SIMPLIFIED boarding notifications check."""
         try:
             now_utc = datetime.now(timezone.utc)
             
-            # Get trips with departure in next 35-45 minutes
-            start_window = now_utc + timedelta(minutes=35)
-            end_window = now_utc + timedelta(minutes=45)
+            # Get trips with departure in next 30-40 minutes (adjusted for 35min scheduling)
+            start_window = now_utc + timedelta(minutes=30)
+            end_window = now_utc + timedelta(minutes=40)
             
             all_trips = await self.db_client.get_trips_to_poll(end_window)
             boarding_trips = [
