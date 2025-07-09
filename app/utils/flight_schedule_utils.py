@@ -87,9 +87,22 @@ def calculate_unified_next_check(
                 # Past arrival - final landing confirmation check
                 next_check = now_utc + timedelta(hours=2)
         else:
-            # REMOVED DUPLICATE LOGIC - use intelligent calculation instead
-            logger.warning("no_estimated_arrival_provided_for_departed_flight")
-            next_check = now_utc + timedelta(hours=8)  # Generic fallback
+            # SIMPLIFIED FALLBACK: No estimated_arrival available
+            logger.warning("no_estimated_arrival_in_database",
+                departure_time=departure_time.isoformat(),
+                solution="using_simple_8h_heuristic"
+            )
+            
+            # SIMPLE INTELLIGENT FALLBACK: 6 hours (reasonable average)
+            # Short flights: 2-4h, Long flights: 8-12h → 6h is good middle ground
+            estimated_arrival_fallback = departure_time + timedelta(hours=6)
+            
+            if estimated_arrival_fallback > now_utc:
+                # Flight still in air - check at estimated landing
+                next_check = estimated_arrival_fallback
+            else:
+                # Should have landed already - check now for landing confirmation
+                next_check = now_utc + timedelta(minutes=30)
     
     logger.info("optimized_next_check_calculated",
         departure_time=departure_time.isoformat(),

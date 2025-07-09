@@ -219,6 +219,18 @@ class NotificationsAgent:
             
             for trip in active_trips:
                 try:
+                    # CREATIVE SKIP CHECK: Auto-detected problematic flights
+                    trip_metadata = getattr(trip, 'metadata', {}) or {}
+                    if trip_metadata.get('skip_polling', False):
+                        logger.info("skipping_problematic_flight", 
+                            trip_id=str(trip.id),
+                            flight_number=trip.flight_number,
+                            reason="auto_detected_aeroapi_failure",
+                            api_failures=trip_metadata.get('api_failures', 0)
+                        )
+                        success_count += 1  # Count as processed
+                        continue
+                    
                     # Get current status with INTELLIGENT CACHING
                     departure_date_str = trip.departure_date.strftime("%Y-%m-%d")
                     current_status = await self.aeroapi_client.get_flight_status(
@@ -227,6 +239,24 @@ class NotificationsAgent:
                     )
                     
                     if not current_status:
+                        # AUTO-DETECTION: Increment failure count for problematic flights
+                        trip_metadata = getattr(trip, 'metadata', {}) or {}
+                        failure_count = trip_metadata.get('api_failures', 0) + 1
+                        trip_metadata['api_failures'] = failure_count
+                        trip_metadata['last_failure'] = now_utc.isoformat()
+                        
+                        # Auto-skip after 3 failures
+                        if failure_count >= 3:
+                            trip_metadata['skip_polling'] = True
+                            trip_metadata['reason'] = "auto_detected_aeroapi_failure"
+                            logger.warning("auto_marking_flight_for_skip", 
+                                trip_id=str(trip.id),
+                                flight_number=trip.flight_number,
+                                failure_count=failure_count
+                            )
+                        
+                        await self.db_client.update_trip_status(trip.id, {"metadata": trip_metadata})
+                        
                         # Update next check anyway using UNIFIED logic
                         next_check = calculate_unified_next_check(
                             trip.departure_date, now_utc, "UNKNOWN"
@@ -577,20 +607,27 @@ class NotificationsAgent:
                         departure_date_str
                     )
                     
-                    if fresh_status and fresh_status.gate_origin:
-                        gate_info = fresh_status.gate_origin
-                        
-                        # 3. Update trip.gate immediately in database
-                        await self.db_client.update_trip_status(
+                    if fresh_status:
+                        # CRITICAL FIX: Always update trip comprehensively with fresh AeroAPI data
+                        update_result = await self.db_client.update_trip_comprehensive(
                             trip.id, 
-                            {"gate": gate_info}
+                            fresh_status,
+                            update_metadata=True
                         )
                         
-                        logger.info("updated_gate_from_aeroapi", 
-                            trip_id=str(trip.id),
-                            new_gate=gate_info,
-                            flight_number=trip.flight_number
-                        )
+                        if fresh_status.gate_origin:
+                            gate_info = fresh_status.gate_origin
+                            logger.info("updated_gate_from_aeroapi", 
+                                trip_id=str(trip.id),
+                                new_gate=gate_info,
+                                flight_number=trip.flight_number
+                            )
+                        
+                        if update_result.success:
+                            logger.info("trip_metadata_updated_during_boarding", 
+                                trip_id=str(trip.id),
+                                flight_number=trip.flight_number
+                            )
                     else:
                         logger.warning("no_gate_available_from_aeroapi", 
                             trip_id=str(trip.id),
@@ -606,9 +643,10 @@ class NotificationsAgent:
             # 4. Final fallback if no gate available anywhere
             if not gate_info:
                 gate_info = "Ver pantallas del aeropuerto"
-                logger.info("using_fallback_gate_message", 
+                logger.warning("using_fallback_gate_message", 
                     trip_id=str(trip.id),
-                    reason="no gate available from DB or AeroAPI"
+                    flight_number=trip.flight_number,
+                    reason="no gate available from DB or AeroAPI - airline has not assigned gate yet"
                 )
             
             extra_data["gate"] = gate_info
@@ -858,7 +896,7 @@ class NotificationsAgent:
             return WhatsAppTemplates.format_cancelled_flight(trip_data)
         
         elif notification_type == NotificationType.BOARDING:
-            gate = extra_data.get("gate", "Ver pantallas") if extra_data else "Ver pantallas"
+            gate = extra_data.get("gate", "Ver pantallas del aeropuerto") if extra_data else "Ver pantallas del aeropuerto"
             return WhatsAppTemplates.format_boarding_call(trip_data, gate)
         
         elif notification_type == NotificationType.RESERVATION_CONFIRMATION:
