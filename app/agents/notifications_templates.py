@@ -271,21 +271,28 @@ class WhatsAppTemplates:
         # Use async function to get city name (with OpenAI fallback)
         destination_city = await get_city_name_from_iata(destination_iata)
         
-        # Try to get hotel address from trip metadata  
+        # ENHANCED: Check for hotel information in multiple places with 'stay' as unified field name
         from ..config.messages import MessageConfig
         default_hotel_text = MessageConfig.get_hotel_placeholder()
         
-        if hotel_address == default_hotel_text and "metadata" in trip_data:
-            metadata = trip_data.get("metadata", {})
-            if isinstance(metadata, dict):
-                # Look for hotel information in metadata
-                hotel_info = (
-                    metadata.get("hotel_address") or 
-                    metadata.get("accommodation_address") or
-                    metadata.get("hotel_name") or
-                    default_hotel_text
-                )
-                hotel_address = hotel_info
+        if hotel_address == default_hotel_text:
+            # Priority 1: Check 'stay' field directly (unified field)
+            if trip_data.get("stay"):
+                hotel_address = trip_data["stay"]
+            # Priority 2: Check metadata with multiple possible field names
+            elif "metadata" in trip_data and trip_data["metadata"]:
+                metadata = trip_data.get("metadata", {})
+                if isinstance(metadata, dict):
+                    # Look for hotel information in metadata (fallback compatibility)
+                    hotel_info = (
+                        metadata.get("stay") or  # Primary unified field name
+                        metadata.get("hotel_address") or 
+                        metadata.get("accommodation_address") or
+                        metadata.get("hotel_name") or
+                        metadata.get("hotel_info", {}).get("name") if isinstance(metadata.get("hotel_info"), dict) else None or
+                        default_hotel_text
+                    )
+                    hotel_address = hotel_info
         
         template_info = cls.TEMPLATES[NotificationType.LANDING_WELCOME]
         return {
@@ -293,7 +300,7 @@ class WhatsAppTemplates:
             "template_name": template_info["name"], 
             "template_variables": {
                 "1": destination_city,    # destination_city (from OpenAI if needed)
-                "2": hotel_address       # hotel_address or fallback
+                "2": hotel_address       # hotel_address from stay field or metadata fallback
             }
         }
     

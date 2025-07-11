@@ -155,17 +155,26 @@ class SupabaseDBClient:
                 "metadata": trip_data.metadata,
                 "client_description": trip_data.client_description,
                 "agency_id": str(trip_data.agency_id) if trip_data.agency_id else None,
-                "next_check_at": next_check_at.isoformat()
+                "next_check_at": next_check_at.isoformat(),
+                "stay": trip_data.stay  # Include stay field
             }
             
-            # FIXED: Extract estimated_arrival from metadata if provided by user
+            # FIXED: Extract estimated_arrival from metadata using AEROAPI variable names
+            # AeroAPI uses 'estimated_in' for arrival times, but also accept 'expected_arrival' for manual input
             if trip_data.metadata and 'flight_details' in trip_data.metadata:
                 flight_details = trip_data.metadata['flight_details']
-                if 'expected_arrival' in flight_details:
+                
+                # Try multiple field names: AeroAPI standard and manual input
+                arrival_field = None
+                if 'estimated_in' in flight_details:
+                    arrival_field = flight_details['estimated_in']
+                elif 'expected_arrival' in flight_details:  
+                    arrival_field = flight_details['expected_arrival']
+                
+                if arrival_field:
                     try:
                         # Parse expected_arrival from metadata
-                        expected_arrival_str = flight_details['expected_arrival']
-                        estimated_arrival_dt = datetime.fromisoformat(expected_arrival_str.replace('Z', '+00:00'))
+                        estimated_arrival_dt = datetime.fromisoformat(arrival_field.replace('Z', '+00:00'))
                         
                         # CRITICAL FIX: Apply timezone conversion for consistency with departure_date
                         # estimated_arrival should be treated as LOCAL destination time, then converted to UTC
@@ -187,7 +196,7 @@ class SupabaseDBClient:
                     except (ValueError, KeyError) as e:
                         logger.warning("estimated_arrival_parse_failed",
                             flight_number=trip_data.flight_number,
-                            expected_arrival=flight_details.get('expected_arrival'),
+                            arrival_field=arrival_field,
                             error=str(e)
                         )
             

@@ -27,6 +27,7 @@ class TripCreate(BaseModel):
     metadata: Optional[dict] = None
     client_description: Optional[str] = None
     agency_id: Optional[UUID] = None  # Agency association
+    stay: Optional[str] = None  # Hotel information: "Hotel Name, Address"
 
     @validator('whatsapp')
     def validate_whatsapp(cls, v):
@@ -89,6 +90,7 @@ class Trip(BaseModel):
     agency_id: Optional[UUID] = None
     gate: Optional[str] = None  # Flight departure gate (e.g., "A12", "B3")
     estimated_arrival: Optional[datetime] = None  # Estimated arrival time from AeroAPI
+    stay: Optional[str] = None  # Hotel information: "Hotel Name, Address"
 
 
 class NotificationLog(BaseModel):

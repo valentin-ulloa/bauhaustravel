@@ -572,61 +572,70 @@ Todo listo para tu viaje a {trip.destination_iata} con el vuelo {trip.flight_num
     
     def _build_concierge_prompt_original(self, context: Dict[str, Any], user_message: str) -> str:
         """
-        Build original (uncompressed) prompt for AI response generation.
-        
-        Args:
-            context: Complete conversation context
-            user_message: Current user message
-            
-        Returns:
-            Complete prompt string
+        Build optimized prompt for AI response generation using the new structure.
         """
-        # Format trip information
-        trip_info = f"""
-INFORMACIÓN DEL VIAJE:
-- Viajero: {context['trip']['client_name']}
-- Vuelo: {context['trip']['flight_number']}
-- Ruta: {context['trip']['origin_iata']} → {context['trip']['destination_iata']}
-- Salida: {context['trip']['departure_date']}
-- Perfil: {context['trip']['client_description']}
-"""
-        
-        # Format conversation history
-        history_text = ""
-        if context.get("conversation_history"):
-            history_text = "\nHISTORIAL DE CONVERSACIÓN RECIENTE:\n"
-            for conv in context["conversation_history"][-6:]:  # Last 3 exchanges
-                sender_label = "Usuario" if conv["sender"] == "user" else "Asistente"
-                history_text += f"{sender_label}: {conv['message']}\n"
-        
-        # Format itinerary info
-        itinerary_text = ""
-        if context.get("itinerary") and context["itinerary"].get("days"):
-            itinerary_text = f"\nITINERARIO DISPONIBLE:\n"
-            for day in context["itinerary"]["days"][:2]:  # First 2 days summary
-                itinerary_text += f"Día {day['date']}: {len(day.get('items', []))} actividades\n"
-        
-        # Format available documents
-        docs_text = ""
-        if context.get("documents"):
-            doc_types = [doc["type"] for doc in context["documents"]]
-            docs_text = f"\nDOCUMENTOS DISPONIBLES: {', '.join(set(doc_types))}"
-        
-        prompt = f"""{trip_info}{history_text}{itinerary_text}{docs_text}
+        # Format system prompt
+        system_prompt = """
+Eres “Concierge 24/7” de Nagori Travel: experto, formal y cálido. Resuelve dudas con precisión y empatía (≤90 palabras, ≤3 emojis). Español neutro ("vos" para LATAM). No repitas datos previos. Solo info autenticada. Si no sabes, ofrece escalar (+123456789 de Nagori). Oculta razonamiento.
+        """.strip()
 
-MENSAJE ACTUAL DEL USUARIO: {user_message}
+        # Format context_trip as JSON
+        context_trip_json = json.dumps(context.get('trip', {}))
 
-INSTRUCCIONES:
-- Responde de manera amigable y profesional en español
-- Si preguntan por itinerario y está disponible, ofrece detalles específicos
-- Si preguntan por documentos, confirma qué tienes disponible
-- Si no tienes la información, sé honesto y ofrece alternativas
-- Mantén respuestas concisas (máximo 200 palabras)
-- Si detectas una pregunta urgente sobre vuelos, prioriza esa información
+        # Format conversation_history (limit to 6, summarize if needed)
+        history = context.get('conversation_history', [])[-6:]
+        if len(history) > 6:
+            history_summary = "Resumen de historia previa: " + " ".join([msg['message'][:50] for msg in history[:3]])  # Simple summarize
+            historical_messages = history_summary + "\n" + json.dumps(history[-3:])
+        else:
+            historical_messages = json.dumps(history)
 
-RESPUESTA:"""
-        
-        return prompt
+        # User message
+        user_msg = user_message
+
+        # Retrieved info (optional, e.g., from Perplexity)
+        perplexity_results_json = json.dumps(context.get('retrieved_info', {}))
+
+        # Instructions with few-shot
+        instructions = """
+Paso 1: Clasifica intent interno (greeting, flight_info, itinerary, document_request, replan_request, destination_q, general_q). Chain-of-thought: "Keywords X sugieren Y".
+
+Paso 2: Responde con empatía según intent (few-shot abajo). Integra context/retrieved sin inventar. Cierra con CTA.
+
+Few-shot:
+- greeting: "¡Hola! Entiendo que estás planeando tu viaje. ¿En qué ayudo?"
+- flight_info (delayed): "Entiendo tu preocupación 😔. Salida: 16:20 local (15:20 UTC), status: Delayed 30min, puerta: A1. ¿Replanear?"
+- replan_request: "Lamento el inconveniente. Opciones: 1) Vuelo alternativo a las 18:00; 2) Contacta agente. ¿Cuál eliges?"
+- document_request: "Aquí tu pase: [link]. ¿El hotel también?"
+
+Paso 3: Si falta info: "Lo siento, no lo tengo. ¿Escalo a un agente (+123456789)?"
+        """.strip()
+
+        # Response format
+        response_format = """
+{
+  "intent": "<intent>",
+  "response": "<markdown>",
+  "escalate": <boolean>,
+  "tokens_used": <int optional>
+}
+        """.strip()
+
+        # Combine into full prompt
+        full_prompt = f"""
+<system>{system_prompt}</system>
+
+<context_trip>{context_trip_json}</context_trip>
+<conversation_history max_turns="6" summarize_if_overflow="true">{historical_messages}</conversation_history>
+<user_message>{user_msg}</user_message>
+<retrieved_info optional="true">{perplexity_results_json}</retrieved_info>
+
+<instructions>{instructions}</instructions>
+
+<response_format>{response_format}</response_format>
+        """.strip()
+
+        return full_prompt
     
 
     

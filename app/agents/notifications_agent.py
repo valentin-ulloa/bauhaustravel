@@ -199,6 +199,7 @@ class NotificationsAgent:
     async def poll_flight_changes(self) -> DatabaseResult:
         """
         Poll flight changes with OPTIMIZED AeroAPI usage and UNIFIED next_check_at.
+        NEW: Only polls flights within 6 hours of departure to avoid premature notifications.
         """
         logger.info("polling_flight_changes_optimized")
         
@@ -208,11 +209,27 @@ class NotificationsAgent:
             # Get trips that need status polling
             trips_to_check = await self.db_client.get_trips_to_poll(now_utc)
             
-            # Filter active trips only
+            # NEW: Filter to only flights within 6 hours of departure
+            # This prevents premature notifications like gate changes days in advance
+            six_hours_from_now = now_utc + timedelta(hours=6)
+            
             active_trips = [
                 trip for trip in trips_to_check 
-                if trip.departure_date > now_utc
+                if trip.departure_date > now_utc and trip.departure_date <= six_hours_from_now
             ]
+            
+            # Log skipped trips for debugging
+            far_future_trips = [
+                trip for trip in trips_to_check 
+                if trip.departure_date > six_hours_from_now
+            ]
+            
+            if far_future_trips:
+                logger.info("skipping_far_future_flights_6h_window",
+                    skipped_count=len(far_future_trips),
+                    next_eligible_time=min(trip.departure_date - timedelta(hours=6) for trip in far_future_trips).isoformat(),
+                    optimization="prevent_premature_notifications"
+                )
             
             success_count = 0
             notifications_sent = 0
@@ -340,9 +357,12 @@ class NotificationsAgent:
         previous_status: Optional[FlightStatus]
     ) -> List[Dict[str, Any]]:
         """
-        SIMPLIFIED change detection - only meaningful changes that need notifications.
+        ENHANCED change detection - only meaningful changes that need notifications.
         
-        Eliminates ping-pong detection complexity while maintaining accuracy.
+        NEW FEATURES:
+        - Gate changes only if different AND not empty/null
+        - Terminal changes (significant for passengers)
+        - Improved delay detection with minimum thresholds
         """
         if not previous_status:
             return []
@@ -359,14 +379,30 @@ class NotificationsAgent:
                     "notification_type": self._map_status_to_notification(current_status.status)
                 })
         
-        # Gate change
+        # Gate change - enhanced filtering
         if (current_status.gate_origin and 
-            current_status.gate_origin != previous_status.gate_origin):
+            previous_status.gate_origin and
+            current_status.gate_origin != previous_status.gate_origin and
+            current_status.gate_origin.strip() != "" and
+            previous_status.gate_origin.strip() != ""):
             changes.append({
                 "type": "gate_change",
                 "old_value": previous_status.gate_origin,
                 "new_value": current_status.gate_origin,
                 "notification_type": "gate_change"
+            })
+        
+        # Terminal change (also important for passengers)
+        if (hasattr(current_status, 'terminal_origin') and 
+            hasattr(previous_status, 'terminal_origin') and
+            current_status.terminal_origin and 
+            previous_status.terminal_origin and
+            current_status.terminal_origin != previous_status.terminal_origin):
+            changes.append({
+                "type": "terminal_change",
+                "old_value": previous_status.terminal_origin,
+                "new_value": current_status.terminal_origin,
+                "notification_type": "terminal_change"
             })
         
         # Significant departure time change (>= 15 minutes)
@@ -384,6 +420,12 @@ class NotificationsAgent:
                 "type": "cancellation",
                 "notification_type": "cancelled"
             })
+        
+        logger.info("change_detection_completed",
+            total_changes=len(changes),
+            change_types=[change["type"] for change in changes],
+            optimization="enhanced_filtering"
+        )
         
         return changes
     
@@ -814,16 +856,22 @@ class NotificationsAgent:
     async def _get_dynamic_landing_data(self, trip: Trip) -> Dict[str, Any]:
         """
         Get dynamic landing data from trip metadata and database.
+        ENHANCED: Check for hotel information in both 'stay' field and metadata with unified field name.
         """
         hotel_address = "tu alojamiento reservado"
         
-        # Try to get hotel info from trip metadata
-        if hasattr(trip, 'metadata') and trip.metadata:
+        # Priority 1: Check 'stay' field directly (unified field)
+        if hasattr(trip, 'stay') and trip.stay:
+            hotel_address = trip.stay
+        # Priority 2: Check metadata with multiple possible field names  
+        elif hasattr(trip, 'metadata') and trip.metadata:
             if isinstance(trip.metadata, dict):
                 hotel_address = (
+                    trip.metadata.get("stay") or  # Primary unified field name
                     trip.metadata.get("hotel_address") or 
                     trip.metadata.get("accommodation_address") or
                     trip.metadata.get("hotel_name") or
+                    trip.metadata.get("hotel_info", {}).get("name") if isinstance(trip.metadata.get("hotel_info"), dict) else None or
                     hotel_address
                 )
         

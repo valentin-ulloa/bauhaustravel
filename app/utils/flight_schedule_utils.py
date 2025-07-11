@@ -56,13 +56,19 @@ def calculate_unified_next_check(
         )
         return None
     
-    # PRE-DEPARTURE PHASE - OPTIMIZED for minimal AeroAPI calls
-    if hours_until_departure > 24:
-        # Far future - changes rare, check every 6h
-        next_check = now_utc + timedelta(hours=12)
+    # PRE-DEPARTURE PHASE - OPTIMIZED for minimal AeroAPI calls with 6-hour window
+    if hours_until_departure > 6:
+        # Far future - schedule exactly 6 hours before departure
+        # This aligns with the 6-hour polling window in notifications_agent
+        next_check = departure_time - timedelta(hours=6)
+        logger.info("scheduling_first_poll_6h_before",
+            departure_time=departure_time.isoformat(),
+            next_check=next_check.isoformat(),
+            optimization="prevent_premature_notifications"
+        )
     elif hours_until_departure > 4:
-        # Days before - minimal changes, check every 10h  
-        next_check = now_utc + timedelta(hours=10)
+        # Approaching - minimal changes, check every 2h within 6h window  
+        next_check = now_utc + timedelta(hours=2)
     elif hours_until_departure > 1:
         # Final hours - gate/delays possible, check every 40min
         next_check = now_utc + timedelta(minutes=40)
@@ -120,19 +126,19 @@ def get_polling_phase(departure_time: datetime, now_utc: datetime) -> str:
     """
     Get current polling phase for logging/debugging.
     
-    OPTIMIZED PHASES:
-    - far_future: >24h (every 12h)
-    - approaching: 4-24h (every 10h) 
+    UPDATED PHASES for 6-hour window optimization:
+    - far_future: >6h (scheduled at departure-6h)
+    - approaching: 4-6h (every 2h) 
     - critical: 1-4h (every 40min)
     - imminent: <1h (every 15min)
     - departed: flight departed (arrival_time only)
     """
     hours_until_departure = (departure_time - now_utc).total_seconds() / 3600
     
-    if hours_until_departure > 24:
-        return "far_future"  # every 12h
+    if hours_until_departure > 6:
+        return "far_future"   # scheduled at departure-6h
     elif hours_until_departure > 4:
-        return "approaching"  # every 10h
+        return "approaching"  # every 2h
     elif hours_until_departure > 1:
         return "critical"     # every 40min
     elif hours_until_departure > 0:
