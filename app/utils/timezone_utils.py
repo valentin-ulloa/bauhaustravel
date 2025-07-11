@@ -166,6 +166,21 @@ def convert_utc_to_local_airport(utc_datetime: datetime, airport_iata: str) -> d
         return utc_datetime
 
 
+# Add alias for scheduler compatibility
+def convert_utc_to_local_time(utc_datetime: datetime, airport_iata: str) -> datetime:
+    """
+    Alias for convert_utc_to_local_airport for backward compatibility.
+    
+    Args:
+        utc_datetime: Datetime in UTC
+        airport_iata: IATA code for airport timezone
+        
+    Returns:
+        Datetime converted to local airport timezone
+    """
+    return convert_utc_to_local_airport(utc_datetime, airport_iata)
+
+
 def format_departure_time_local(utc_datetime: datetime, origin_iata: str) -> str:
     """
     ARCHITECTURAL: Format UTC storage time as local time for notifications.

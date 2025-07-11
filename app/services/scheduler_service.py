@@ -46,11 +46,11 @@ class SchedulerService:
             return
         
         try:
-            # Job 1: 24h reminders (daily at 9 AM UTC)
+            # Job 1: 24h reminders (INTELLIGENT: every hour with local time filtering)
             self.scheduler.add_job(
-                self._process_24h_reminders,
-                CronTrigger(hour=9, minute=0),
-                id='24h_reminders',
+                self._process_24h_reminders_intelligent,
+                IntervalTrigger(hours=1),  # Check every hour, but filter by local time
+                id='24h_reminders_intelligent',
                 max_instances=1,
                 replace_existing=True
             )
@@ -190,19 +190,169 @@ class SchedulerService:
                 error=str(e)
             )
     
-    async def _process_24h_reminders(self):
-        """Process 24h flight reminders using unified agent."""
+    async def _process_24h_reminders_intelligent(self):
+        """
+        Process 24h flight reminders with INTELLIGENT local time filtering.
+        
+        Only sends reminders when local time at origin airport is 8AM-10PM.
+        This prevents notifications at inappropriate local hours globally.
+        """
         try:
-            logger.info("processing_24h_reminders")
-            result = await self.notifications_agent.run("24h_reminder")
+            now_utc = datetime.now(timezone.utc)
+            logger.info("processing_24h_reminders_intelligent", 
+                current_utc=now_utc.strftime("%H:%M UTC")
+            )
             
-            if result.success:
-                logger.info("24h_reminders_completed", data=result.data)
+            # Get trips that would be in 24h window
+            reminder_window_start = now_utc + timedelta(hours=23, minutes=30)
+            reminder_window_end = now_utc + timedelta(hours=24, minutes=30)
+            
+            all_trips = await self.db_client.get_trips_to_poll(reminder_window_end)
+            
+            candidate_trips = [
+                trip for trip in all_trips 
+                if reminder_window_start <= trip.departure_date <= reminder_window_end
+            ]
+            
+            valid_trips = []
+            skipped_trips = []
+            
+            # Filter by local time at each trip's origin airport
+            for trip in candidate_trips:
+                is_valid_local_time = await self._is_valid_local_time_for_reminder(trip, now_utc)
+                
+                if is_valid_local_time:
+                    valid_trips.append(trip)
+                else:
+                    skipped_trips.append(trip)
+            
+            logger.info("24h_reminders_intelligent_filtering",
+                total_candidates=len(candidate_trips),
+                valid_for_sending=len(valid_trips),
+                skipped_quiet_hours=len(skipped_trips)
+            )
+            
+            # Process only valid trips using existing agent logic
+            if valid_trips:
+                # Temporarily override the agent's trip filtering for our pre-filtered list
+                result = await self._send_24h_reminders_for_trips(valid_trips)
+                
+                if result.success:
+                    logger.info("24h_reminders_completed_intelligent", 
+                        data=result.data,
+                        sent_count=result.data.get("sent", 0)
+                    )
+                else:
+                    logger.error("24h_reminders_failed_intelligent", error=result.error)
             else:
-                logger.error("24h_reminders_failed", error=result.error)
+                logger.info("24h_reminders_no_valid_trips_intelligent",
+                    message="No trips in valid local time window"
+                )
                 
         except Exception as e:
-            logger.error("24h_reminders_exception", error=str(e))
+            logger.error("24h_reminders_intelligent_exception", error=str(e))
+    
+    async def _is_valid_local_time_for_reminder(self, trip, now_utc: datetime) -> bool:
+        """
+        Check if current time is valid for sending 24h reminder based on origin airport local time.
+        
+        Args:
+            trip: Trip object with origin_iata
+            now_utc: Current UTC time
+            
+        Returns:
+            True if local time at origin is 8 AM - 10 PM, False otherwise
+        """
+        try:
+            from ..utils.timezone_utils import convert_utc_to_local_time
+            
+            # Convert UTC to local time at origin airport
+            local_time = convert_utc_to_local_time(now_utc, trip.origin_iata)
+            
+            # Valid window: 8 AM - 10 PM local time
+            is_valid = 8 <= local_time.hour < 22
+            
+            logger.debug("local_time_validation",
+                trip_id=str(trip.id),
+                origin_iata=trip.origin_iata,
+                utc_time=now_utc.strftime("%H:%M UTC"),
+                local_time=local_time.strftime("%H:%M %Z"),
+                local_hour=local_time.hour,
+                is_valid=is_valid
+            )
+            
+            return is_valid
+            
+        except Exception as e:
+            logger.warning("local_time_validation_failed",
+                trip_id=str(trip.id),
+                origin_iata=trip.origin_iata,
+                error=str(e),
+                fallback="allowing_reminder"
+            )
+            # Fallback: allow sending if timezone conversion fails
+            return True
+    
+    async def _send_24h_reminders_for_trips(self, trips_list):
+        """
+        Send 24h reminders for a pre-filtered list of trips.
+        
+        This bypasses the agent's own filtering since we've already done
+        intelligent local time filtering.
+        """
+        try:
+            from ..agents.notifications_templates import NotificationType
+            from ..utils.flight_schedule_utils import should_suppress_notification_unified
+            
+            now_utc = datetime.now(timezone.utc)
+            success_count = 0
+            
+            for trip in trips_list:
+                # Check if reminder already sent
+                history = await self.db_client.get_notification_history(
+                    trip.id, NotificationType.REMINDER_24H.value.upper()
+                )
+                
+                if any(log.delivery_status == "SENT" for log in history):
+                    logger.info("24h_reminder_already_sent", trip_id=str(trip.id))
+                    continue
+                
+                # Double-check quiet hours using existing unified logic
+                should_suppress = should_suppress_notification_unified(
+                    "REMINDER_24H", now_utc, trip.origin_iata
+                )
+                if should_suppress:
+                    logger.info("24h_reminder_suppressed_quiet_hours_fallback", 
+                        trip_id=str(trip.id),
+                        origin_iata=trip.origin_iata
+                    )
+                    continue
+                
+                # Send reminder using notifications agent
+                result = await self.notifications_agent.send_notification(
+                    trip=trip,
+                    notification_type=NotificationType.REMINDER_24H,
+                    extra_data=await self.notifications_agent._get_dynamic_reminder_data(trip)
+                )
+                
+                if result.success:
+                    success_count += 1
+                    logger.info("24h_reminder_sent_intelligent", 
+                        trip_id=str(trip.id),
+                        flight_number=trip.flight_number
+                    )
+            
+            return type('Result', (), {
+                'success': True, 
+                'data': {"sent": success_count}
+            })()
+            
+        except Exception as e:
+            logger.error("send_24h_reminders_for_trips_failed", error=str(e))
+            return type('Result', (), {
+                'success': False, 
+                'error': str(e)
+            })()
     
     async def _process_intelligent_flight_polling(self):
         """

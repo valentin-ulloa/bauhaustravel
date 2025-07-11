@@ -35,14 +35,15 @@ class ConciergeAgent:
         # OpenAI setup
         openai_api_key = os.getenv("OPENAI_API_KEY")
         if not openai_api_key:
-            # TEMPORARY: Use a test key for development
-            openai_api_key = "sk-test-key-for-development"
-            logger.warning("using_fallback_openai_key", reason="OPENAI_API_KEY not found in environment")
-        
-        self.openai_client = OpenAI(api_key=openai_api_key)
+            # IMPROVED: Better fallback handling
+            logger.warning("openai_api_key_missing", 
+                reason="OPENAI_API_KEY not found - using fallback responses")
+            self.openai_client = None
+        else:
+            self.openai_client = OpenAI(api_key=openai_api_key)
         
         logger.info("concierge_agent_initialized", 
-            openai_enabled=openai_api_key is not None
+            openai_enabled=self.openai_client is not None
         )
     
     async def handle_inbound_message(
@@ -511,32 +512,31 @@ Todo listo para tu viaje a {trip.destination_iata} con el vuelo {trip.flight_num
     
     async def _generate_ai_response(self, context: Dict[str, Any], user_message: str) -> str:
         """
-        Generate AI response with loaded context.
-        
-        Args:
-            context: Complete conversation context
-            user_message: Current user message
-            
-        Returns:
-            Generated response text
+        Generate AI response with loaded context - FIXED VERSION with fallbacks.
         """
         trip_id = context.get('trip', {}).get('id')
+        trip = context.get('trip', {})
+        
+        # IMPROVED: Fallback if OpenAI not available
+        if not self.openai_client:
+            return self._generate_fallback_response(trip, user_message)
         
         try:
-            # Build comprehensive prompt
+            # Build simplified prompt
             prompt = self._build_concierge_prompt_original(context, user_message)
             
-            # Make OpenAI request
+            # Make OpenAI request with simplified response handling
             response = await self._make_openai_request(prompt)
-            ai_response = response.choices[0].message.content
+            ai_response = response.choices[0].message.content.strip()
             
+            # FIXED: Handle response as plain text, not JSON
             logger.info("ai_response_generated",
                 trip_id=str(trip_id) if trip_id else None,
                 tokens_used=response.usage.total_tokens,
                 response_length=len(ai_response)
             )
             
-            return ai_response.strip()
+            return ai_response
             
         except Exception as e:
             logger.error("ai_response_generation_failed",
@@ -544,100 +544,95 @@ Todo listo para tu viaje a {trip.destination_iata} con el vuelo {trip.flight_num
                 error=str(e)
             )
             
-            return "Disculpa, estoy teniendo problemas técnicos. ¿Podrías intentar de nuevo en un momento?"
+            # IMPROVED: Use fallback instead of generic error
+            return self._generate_fallback_response(trip, user_message)
+    
+    def _generate_fallback_response(self, trip: Dict[str, Any], user_message: str) -> str:
+        """
+        Generate intelligent fallback response when OpenAI is unavailable.
+        """
+        client_name = trip.get('client_name', 'viajero')
+        destination = trip.get('destination_iata', 'tu destino')
+        
+        # Smart fallback based on message content
+        message_lower = user_message.lower()
+        
+        if any(word in message_lower for word in ['hola', 'hello', 'hi', 'buenos']):
+            return f"¡Hola {client_name}! 👋 Estoy aquí para ayudarte con tu viaje a {destination}. ¿En qué te puedo asistir?"
+        
+        elif any(word in message_lower for word in ['vuelo', 'flight', 'horario']):
+            flight_number = trip.get('flight_number', 'tu vuelo')
+            return f"Tu vuelo {flight_number} está programado. Para información actualizada, contacta a tu agencia de viajes. ¿Algo más en lo que pueda ayudarte?"
+        
+        elif any(word in message_lower for word in ['itinerario', 'plan', 'actividades']):
+            return f"Para tu itinerario en {destination}, contacta a tu agencia de viajes. Ellos tienen toda la información detallada. ¿Te puedo ayudar con algo más?"
+        
+        else:
+            return f"Gracias por tu mensaje, {client_name}. Para asistencia especializada con tu viaje a {destination}, te recomiendo contactar directamente a tu agencia de viajes. ¿Hay algo urgente en lo que pueda ayudarte?"
     
     async def _make_openai_request(self, prompt: str, model: str = "gpt-4o-mini"):
         """
-        TC-004: Extracted method for making OpenAI requests (for retry logic and model selection).
+        Make OpenAI request with optimized system prompt - FIXED VERSION.
         """
-        # Convert sync OpenAI call to async context
         import asyncio
         
         def sync_openai_call():
             return self.openai_client.chat.completions.create(
-                model=model,  # TC-004: Use selected model
+                model=model,
                 messages=[
-                    {"role": "system", "content": "Eres un asistente de viajes experto y amigable. Ayudas a viajeros con información sobre sus itinerarios, vuelos y documentos. Responde en español de manera concisa y útil."},
+                    {
+                        "role": "system", 
+                        "content": "Eres un asistente de viajes experto de Nagori Travel. Responde siempre en español de manera concisa, empática y útil. Máximo 90 palabras."
+                    },
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.7,
-                max_tokens=500
+                max_tokens=150  # OPTIMIZED: Reduced for concise responses
             )
         
-        # Run in thread pool to avoid blocking
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, sync_openai_call)
     
-
-    
     def _build_concierge_prompt_original(self, context: Dict[str, Any], user_message: str) -> str:
         """
-        Build optimized prompt for AI response generation using the new structure.
+        Build optimized prompt for AI response generation - FIXED VERSION.
         """
-        # Format system prompt
-        system_prompt = """
-Eres “Concierge 24/7” de Nagori Travel: experto, formal y cálido. Resuelve dudas con precisión y empatía (≤90 palabras, ≤3 emojis). Español neutro ("vos" para LATAM). No repitas datos previos. Solo info autenticada. Si no sabes, ofrece escalar (+123456789 de Nagori). Oculta razonamiento.
-        """.strip()
+        # Extract trip data
+        trip = context.get('trip', {})
+        recent_messages = context.get('recent_messages', [])  # FIXED: Use correct key
+        
+        # Format recent conversation (last 6 messages)
+        conversation_context = ""
+        if recent_messages:
+            conversation_context = "\n\nCONVERSACIÓN RECIENTE:\n"
+            for msg in recent_messages[-6:]:  # Last 6 messages
+                sender = "Usuario" if msg.get('sender') == 'user' else "Asistente"
+                conversation_context += f"{sender}: {msg.get('message', '')}\n"
+        
+        # Build simple, effective prompt
+        prompt = f"""Eres el "Concierge 24/7" de Nagori Travel. Eres experto, formal y cálido.
 
-        # Format context_trip as JSON
-        context_trip_json = json.dumps(context.get('trip', {}))
+INFORMACIÓN DEL VIAJE:
+- Cliente: {trip.get('client_name', 'Viajero')}
+- Vuelo: {trip.get('flight_number', 'N/A')} 
+- Origen: {trip.get('origin_iata', 'N/A')} → Destino: {trip.get('destination_iata', 'N/A')}
+- Fecha: {trip.get('departure_date', 'N/A')}
+- Estado: {trip.get('status', 'Programado')}
 
-        # Format conversation_history (limit to 6, summarize if needed)
-        history = context.get('conversation_history', [])[-6:]
-        if len(history) > 6:
-            history_summary = "Resumen de historia previa: " + " ".join([msg['message'][:50] for msg in history[:3]])  # Simple summarize
-            historical_messages = history_summary + "\n" + json.dumps(history[-3:])
-        else:
-            historical_messages = json.dumps(history)
+{conversation_context}
 
-        # User message
-        user_msg = user_message
+MENSAJE ACTUAL DEL USUARIO: "{user_message}"
 
-        # Retrieved info (optional, e.g., from Perplexity)
-        perplexity_results_json = json.dumps(context.get('retrieved_info', {}))
+INSTRUCCIONES:
+- Responde en español neutro, máximo 90 palabras
+- Usa máximo 3 emojis
+- Si no sabes algo, ofrece contactar a un agente humano
+- Sé empático y útil
+- Termina con una pregunta o llamada a la acción
 
-        # Instructions with few-shot
-        instructions = """
-Paso 1: Clasifica intent interno (greeting, flight_info, itinerary, document_request, replan_request, destination_q, general_q). Chain-of-thought: "Keywords X sugieren Y".
+RESPONDE DIRECTAMENTE (NO JSON, SOLO TEXTO):"""
 
-Paso 2: Responde con empatía según intent (few-shot abajo). Integra context/retrieved sin inventar. Cierra con CTA.
-
-Few-shot:
-- greeting: "¡Hola! Entiendo que estás planeando tu viaje. ¿En qué ayudo?"
-- flight_info (delayed): "Entiendo tu preocupación 😔. Salida: 16:20 local (15:20 UTC), status: Delayed 30min, puerta: A1. ¿Replanear?"
-- replan_request: "Lamento el inconveniente. Opciones: 1) Vuelo alternativo a las 18:00; 2) Contacta agente. ¿Cuál eliges?"
-- document_request: "Aquí tu pase: [link]. ¿El hotel también?"
-
-Paso 3: Si falta info: "Lo siento, no lo tengo. ¿Escalo a un agente (+123456789)?"
-        """.strip()
-
-        # Response format
-        response_format = """
-{
-  "intent": "<intent>",
-  "response": "<markdown>",
-  "escalate": <boolean>,
-  "tokens_used": <int optional>
-}
-        """.strip()
-
-        # Combine into full prompt
-        full_prompt = f"""
-<system>{system_prompt}</system>
-
-<context_trip>{context_trip_json}</context_trip>
-<conversation_history max_turns="6" summarize_if_overflow="true">{historical_messages}</conversation_history>
-<user_message>{user_msg}</user_message>
-<retrieved_info optional="true">{perplexity_results_json}</retrieved_info>
-
-<instructions>{instructions}</instructions>
-
-<response_format>{response_format}</response_format>
-        """.strip()
-
-        return full_prompt
-    
-
+        return prompt
     
     async def _handle_media_message(self, trip_id: UUID, media_url: str, media_type: Optional[str]):
         """
