@@ -8,6 +8,7 @@ from typing import List, Optional, Dict, Any
 from uuid import UUID
 import structlog
 from openai import OpenAI
+import httpx
 
 from ..db.supabase_client import SupabaseDBClient
 from ..models.database import Trip, DatabaseResult, TripContext
@@ -292,7 +293,6 @@ class ConciergeAgent:
             documents = await self.db_client.get_documents_by_trip(trip.id, document_type)
             
             if documents:
-                # Document found - provide information
                 doc = documents[0]  # Get most recent
                 doc_name = doc.get('file_name', f'{document_type}.pdf')
                 
@@ -307,13 +307,22 @@ class ConciergeAgent:
                 
                 if document_url:
                     # Document available with URL
-                    return f"""¡Perfecto! Aquí tienes tu {self._get_document_type_spanish(document_type)} ✈️
+                    notifications_agent = NotificationsAgent()
+                    try:
+                        send_result = await notifications_agent.send_free_text(
+                            trip.whatsapp,
+                            f"""¡Perfecto! Aquí tienes tu {self._get_document_type_spanish(document_type)} ✈️
 
 📄 **{doc_name}**
 📅 Subido: {doc.get('uploaded_at', 'Fecha no disponible')[:10]}
 🔗 [Descargar documento]({document_url})
 
-¿Necesitas algo más de tu viaje a {trip.destination_iata}?"""
+¿Necesitas algo más de tu viaje a {trip.destination_iata}?""",
+                            attachments=[document_url]
+                        )
+                        return "Documento enviado por WhatsApp!"
+                    finally:
+                        await notifications_agent.close()
                 else:
                     # Document exists but no URL available
                     return f"""¡Encontré tu {self._get_document_type_spanish(document_type)}! 📄
@@ -644,21 +653,29 @@ RESPONDE DIRECTAMENTE (NO JSON, SOLO TEXTO):"""
             media_type: Type of media received
         """
         try:
-            # For MVP: Just log media for future processing
-            logger.info("media_message_received",
-                trip_id=str(trip_id),
-                media_url=media_url,
-                media_type=media_type
-            )
-            
-            # TODO: Store media reference for future AI processing
-            # TODO: Add image recognition, audio transcription, etc.
-            
+            async with httpx.AsyncClient() as client:
+                response = await client.get(media_url)
+                response.raise_for_status()
+                file_content = response.content
+                filename = media_url.split('/')[-1]
+                file_type = self._detect_document_type(media_type, filename, await self.db_client.get_latest_intent(trip_id))  # Custom method to detect
+                upload_result = await self.db_client.upload_document(trip_id, file_content, file_type, filename)
+                if upload_result.success:
+                    logger.info("document_uploaded", trip_id=str(trip_id), type=file_type)
+                    return "¡Documento recibido y guardado! Lo enviaré cuando lo pidas."
+                else:
+                    return "Error al guardar el documento. Intenta de nuevo."
         except Exception as e:
-            logger.error("media_handling_failed",
-                trip_id=str(trip_id),
-                error=str(e)
-            )
+            logger.error("media_upload_failed", error=str(e))
+            return "Error procesando el media."
+
+    def _detect_document_type(self, media_type: str, filename: str, intent: str) -> str:
+        if 'boarding' in intent or 'pdf' in filename.lower() and 'pass' in filename.lower():
+            return 'boarding_pass'
+        elif 'hotel' in intent:
+            return 'hotel_reservation'
+        # Add more logic for other types
+        return 'other'
     
     async def _send_no_trip_found_message(self, whatsapp_number: str) -> DatabaseResult:
         """

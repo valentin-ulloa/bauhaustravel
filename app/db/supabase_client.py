@@ -1731,3 +1731,45 @@ class SupabaseDBClient:
                 success=False,
                 error=str(e)
             ) 
+
+    async def get_pending_deferred(self, now_utc: datetime) -> List[Dict]:
+        now_str = now_utc.isoformat()
+        response = await self._client.get(
+            f"{self.rest_url}/notifications_log",
+            params={
+                "delivery_status": "eq.PENDING",
+                "deferred_until": f"lte.{now_str}",
+                "select": "*",
+                "order": "deferred_until.asc"
+            }
+        )
+        return response.json() if response.status_code == 200 else []
+
+    async def update_notification_status(self, log_id: UUID, status: str, error: Optional[str] = None):
+        update_data = {
+            "delivery_status": status,
+            "error_message": error,
+            "deferred_until": None
+        }
+        response = await self._client.patch(
+            f"{self.rest_url}/notifications_log",
+            json=update_data,
+            params={"id": f"eq.{log_id}"}
+        )
+        return DatabaseResult(success=response.status_code == 200) 
+
+    async def upload_document(self, trip_id: UUID, file_content: bytes, file_type: str, filename: str) -> DatabaseResult:
+        storage_path = f"{trip_id}/{filename}"
+        response = await self._client.storage.from_('documents').upload(storage_path, file_content)
+        if response.status_code != 200:
+            return DatabaseResult(success=False, error="Upload failed")
+        public_url = self._client.storage.from_('documents').get_public_url(storage_path)
+        doc_data = {
+            "trip_id": str(trip_id),
+            "type": file_type,
+            "file_url": public_url,
+            "file_name": filename,
+            "uploaded_at": datetime.now(timezone.utc).isoformat()
+        }
+        insert_response = await self._client.post(f"{self.rest_url}/documents", json=doc_data)
+        return DatabaseResult(success=insert_response.status_code == 201, data=insert_response.json() if insert_response.status_code == 201 else None) 

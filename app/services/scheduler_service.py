@@ -82,6 +82,14 @@ class SchedulerService:
                 replace_existing=True
             )
             
+            self.scheduler.add_job(
+                self._process_deferred_notifications,
+                IntervalTrigger(minutes=15),
+                id='deferred_notifications',
+                max_instances=1,
+                replace_existing=True
+            )
+            
             self.scheduler.start()
             self.is_running = True
             
@@ -427,6 +435,16 @@ class SchedulerService:
                 
         except Exception as e:
             logger.error("landing_detection_exception", error=str(e))
+    
+    async def _process_deferred_notifications(self):
+        now_utc = datetime.now(timezone.utc)
+        pending = await self.db_client.get_pending_deferred(now_utc)
+        for log in pending:
+            trip = await self.db_client.get_trip_by_id(log['trip_id'])
+            if trip:
+                result = await self.notifications_agent.send_notification(trip, log['notification_type'], log.get('extra_data'))
+                status = 'SENT' if result.success else 'FAILED'
+                await self.db_client.update_notification_status(log['id'], status, result.error)
     
     async def _send_immediate_reminder(self, trip_id: str):
         """Send immediate 24h reminder using unified agent."""

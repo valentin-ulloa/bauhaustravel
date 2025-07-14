@@ -108,3 +108,8 @@
 
 *Last Updated: 11 July 2025, 17:05 UTC*  
 *Next Review: 12 July 2025 (Post-Mateo flight monitoring)*
+
+### ✅ Deferral Mechanism for Notifications
+- Added deferred_until to notifications_log
+- New scheduler job to process deferred
+- Logic in agent to defer suppressed reminders and landings to post-quiet hours

@@ -16,7 +16,7 @@ from ..services.aeroapi_client import AeroAPIClient, FlightStatus
 from ..services.async_twilio_client import AsyncTwilioClient
 from ..services.notification_retry_service import NotificationRetryService
 from ..utils.flight_schedule_utils import calculate_unified_next_check, should_suppress_notification_unified
-from ..utils.timezone_utils import format_departure_time_human
+from ..utils.timezone_utils import format_departure_time_human, get_airport_timezone
 
 logger = structlog.get_logger()
 
@@ -125,10 +125,15 @@ class NotificationsAgent:
                     "REMINDER_24H", now_utc, trip.origin_iata
                 )
                 if should_suppress:
-                    logger.info("24h_reminder_suppressed_quiet_hours", 
-                        trip_id=str(trip.id),
-                        origin_iata=trip.origin_iata
-                    )
+                    local_tz = get_airport_timezone(trip.origin_iata)
+                    local_now = now_utc.astimezone(local_tz)
+                    next_morning = local_now.replace(hour=9, minute=0, second=0)
+                    if next_morning < local_now:
+                        next_morning += timedelta(days=1)
+                    deferred_until = next_morning.astimezone(timezone.utc)
+                    if deferred_until < trip.departure_date:
+                        await self.db_client.log_notification_sent(trip.id, "REMINDER_24H", now_utc, "PENDING", "recordatorio_24h", None, 0, None, None, deferred_until.isoformat())
+                        logger.info("reminder_deferred", trip_id=str(trip.id), deferred_until=deferred_until.isoformat())
                     continue
                 
                 # Send reminder with DYNAMIC content from database
@@ -824,7 +829,16 @@ class NotificationsAgent:
                         from ..utils.timezone_utils import is_quiet_hours_local
                         is_quiet = is_quiet_hours_local(now_utc, trip.destination_iata)
                         
-                        if not is_quiet:
+                        if is_quiet:
+                            local_tz = get_airport_timezone(trip.destination_iata)
+                            local_now = now_utc.astimezone(local_tz)
+                            next_morning = local_now.replace(hour=9, minute=0, second=0)
+                            if next_morning < local_now:
+                                next_morning += timedelta(days=1)
+                            deferred_until = next_morning.astimezone(timezone.utc)
+                            await self.db_client.log_notification_sent(trip.id, "LANDING_WELCOME", now_utc, "PENDING", "landing_welcome_es", None, 0, None, None, deferred_until.isoformat())
+                            logger.info("landing_deferred", trip_id=str(trip.id), deferred_until=deferred_until.isoformat())
+                        else:
                             # Send landing welcome
                             result = await self.send_notification(
                                 trip=trip,
