@@ -807,28 +807,22 @@ class NotificationsAgent:
                     history = await self.db_client.get_notification_history(
                         trip.id, NotificationType.LANDING_WELCOME.value.upper()
                     )
-                    
                     if any(log.delivery_status == "SENT" for log in history):
                         continue
-                    
                     # Get current status
                     departure_date_str = trip.departure_date.strftime("%Y-%m-%d")
                     current_status = await self.aeroapi_client.get_flight_status(
                         trip.flight_number, 
                         departure_date_str
                     )
-                    
                     if current_status and self._is_flight_landed(current_status):
                         # Update trip status
                         await self.db_client.update_trip_status(trip.id, {"status": "LANDED"})
-                        
                         # Save status to history
                         await self._save_flight_status_optimized(trip, current_status)
-                        
                         # Check quiet hours at destination
                         from ..utils.timezone_utils import is_quiet_hours_local
                         is_quiet = is_quiet_hours_local(now_utc, trip.destination_iata)
-                        
                         if is_quiet:
                             local_tz = get_airport_timezone(trip.destination_iata)
                             local_now = now_utc.astimezone(local_tz)
@@ -845,16 +839,9 @@ class NotificationsAgent:
                                 notification_type=NotificationType.LANDING_WELCOME,
                                 extra_data=await self._get_dynamic_landing_data(trip)
                             )
-                            
                             if result.success:
                                 landed_count += 1
                                 logger.info("landing_welcome_sent", trip_id=str(trip.id))
-                        else:
-                            logger.info("landing_notification_deferred_quiet_hours", 
-                                trip_id=str(trip.id),
-                                destination_iata=trip.destination_iata
-                            )
-                    
                 except Exception as e:
                     logger.error("landing_detection_failed_for_trip", 
                         trip_id=str(trip.id),
