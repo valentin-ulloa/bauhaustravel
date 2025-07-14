@@ -1773,3 +1773,18 @@ class SupabaseDBClient:
         }
         insert_response = await self._client.post(f"{self.rest_url}/documents", json=doc_data)
         return DatabaseResult(success=insert_response.status_code == 201, data=insert_response.json() if insert_response.status_code == 201 else None) 
+
+    async def normalize_stay(self, trip_id: UUID) -> DatabaseResult:
+        trip = await self.get_trip_by_id(trip_id)
+        if not trip:
+            return DatabaseResult(success=False, error="Trip not found")
+        metadata = trip.metadata or {}
+        if 'stay' in metadata and (not trip.stay or trip.stay == ''):
+            stay_info = metadata.pop('stay')
+            update_data = {'stay': stay_info, 'metadata': metadata}
+            response = await self._client.patch(f"{self.rest_url}/trips?id=eq.{trip_id}", json=update_data)
+            if response.status_code == 200:
+                return DatabaseResult(success=True, data=stay_info)
+            else:
+                return DatabaseResult(success=False, error="Failed to update stay")
+        return DatabaseResult(success=True, data=None) 

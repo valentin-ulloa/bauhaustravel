@@ -113,3 +113,8 @@
 - Added deferred_until to notifications_log
 - New scheduler job to process deferred
 - Logic in agent to defer suppressed reminders and landings to post-quiet hours
+
+### ✅ Mejoras en ConciergeAgent y Persistencia
+- Normalización y persistencia de 'stay' en trips table desde metadata.
+- Confirmación de upload de documentos via WhatsApp.
+- Acceso a info completa del vuelo y rol como agencia en prompt.
